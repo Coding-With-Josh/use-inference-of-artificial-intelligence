@@ -1,7 +1,10 @@
-.PHONY: install test lint typecheck demo-mock study1-plan study1-run study1-analyze tasks-validate study2-demo clean
+.PHONY: install test lint typecheck sandbox-image demo-mock study1-plan study1-run study1-analyze tasks-validate study2-demo clean
 
 install:
 	uv sync --dev
+
+sandbox-image:
+	docker build --tag pilot-sandbox:latest --file sandbox/Dockerfile sandbox
 
 test:
 	uv run pytest
@@ -25,7 +28,7 @@ study1-analyze:
 	@echo "study1-analyze: not yet implemented"
 
 tasks-validate:
-	@echo "tasks-validate: not yet implemented"
+	uv run python -m pilot.tasks.validate
 
 study2-demo:
 	@echo "study2-demo: not yet implemented"

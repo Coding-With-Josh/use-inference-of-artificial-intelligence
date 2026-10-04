@@ -1,6 +1,13 @@
-import json
-
-
 def load_config(path):
-    with open(path) as f:
-        return json.load(f)
+    """Load a JSON config file and validate its schema.
+
+    Args:
+        path: path to the JSON file.
+
+    Returns:
+        the validated config dict.
+
+    Raises:
+        NotImplementedError: always; the starter ships no implementation.
+    """
+    raise NotImplementedError

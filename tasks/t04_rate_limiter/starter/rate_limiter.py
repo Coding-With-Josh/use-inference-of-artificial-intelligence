@@ -1,8 +1,33 @@
 class TokenBucket:
+    """Token-bucket rate limiter.
+
+    Args:
+        rate: tokens added per second.
+        capacity: maximum tokens held.
+
+    Raises:
+        NotImplementedError: on construction; the starter ships no implementation.
+    """
+
     def __init__(self, rate, capacity):
-        self.rate = rate
-        self.capacity = capacity
-        self.tokens = capacity
+        """Create a bucket starting full.
+
+        Args:
+            rate: tokens added per second.
+            capacity: maximum tokens held.
+
+        Raises:
+            NotImplementedError: always; the starter ships no implementation.
+        """
+        raise NotImplementedError
 
     def allow(self):
-        return False
+        """Consume one token if available.
+
+        Returns:
+            True if a token was consumed, False if the bucket is empty.
+
+        Raises:
+            NotImplementedError: always; the starter ships no implementation.
+        """
+        raise NotImplementedError

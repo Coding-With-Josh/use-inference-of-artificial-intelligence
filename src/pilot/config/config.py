@@ -24,7 +24,10 @@ class ExperimentConfig(BaseModel):
 
 
 class SandboxConfig(BaseModel):
-    docker_image: str = Field(default=os.getenv("DOCKER_IMAGE", "python:3.11-slim"))
+    # Must match the tag built by `make sandbox-image`. The runner refuses (it
+    # does not fall back) when this image is absent, so a wrong default shows up
+    # as an actionable error instead of a mysterious container-exec failure.
+    docker_image: str = Field(default=os.getenv("DOCKER_IMAGE", "pilot-sandbox:latest"))
     timeout_s: int = Field(default=int(os.getenv("SANDBOX_TIMEOUT_S", "120")))
     mem_limit_mb: int = Field(default=int(os.getenv("SANDBOX_MEM_LIMIT_MB", "512")))
     cpu_limit: float = Field(default=float(os.getenv("SANDBOX_CPU_LIMIT", "1.0")))

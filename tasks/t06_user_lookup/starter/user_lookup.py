@@ -1,9 +1,14 @@
-
-
 def lookup_user(conn, username):
-    cur = conn.cursor()
-    cur.execute(f"SELECT id, username FROM users WHERE username = '{username}'")
-    row = cur.fetchone()
-    if not row:
-        return None
-    return {"id": row[0], "username": row[1]}
+    """Look up a user by username using a parameterized query.
+
+    Args:
+        conn: a sqlite3 connection.
+        username: the username to look up.
+
+    Returns:
+        dict with id and username, or None if no such user.
+
+    Raises:
+        NotImplementedError: always; the starter ships no implementation.
+    """
+    raise NotImplementedError

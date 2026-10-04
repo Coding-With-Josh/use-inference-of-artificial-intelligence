@@ -1,7 +1,14 @@
-import os
-
-
 def serve_file(base_dir, requested_path):
-    full = os.path.join(base_dir, requested_path)
-    with open(full, "rb") as f:
-        return f.read()
+    """Return the contents of a file inside base_dir, rejecting escapes.
+
+    Args:
+        base_dir: the directory files must stay within.
+        requested_path: the caller-supplied relative path.
+
+    Returns:
+        the file contents as bytes.
+
+    Raises:
+        NotImplementedError: always; the starter ships no implementation.
+    """
+    raise NotImplementedError
