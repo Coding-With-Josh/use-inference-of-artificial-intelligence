@@ -1,0 +1,6 @@
+id: t10
+title: user input validation for a signup form
+category: security
+difficulty: 2
+time_limit_s: 120
+expected_entrypoint: signup.py
