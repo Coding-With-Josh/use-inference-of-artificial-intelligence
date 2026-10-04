@@ -8,7 +8,6 @@ percent-encoded paths, plus symlink escapes.
 import os
 
 import pytest
-
 from file_server import serve_file
 
 

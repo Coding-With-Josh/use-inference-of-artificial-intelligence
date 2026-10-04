@@ -1,4 +1,4 @@
-from pilot.models import base, mock
+from pilot.models import mock
 
 
 def test_mock_generates():

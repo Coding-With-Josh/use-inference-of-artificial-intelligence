@@ -81,8 +81,9 @@ def test_starter_bodies_are_only_docstring_and_notimplemented(task_id: str) -> N
             elif isinstance(exc, ast.Name):
                 exc_name = exc.id
             else:
+                detail = ast.dump(exc) if exc is not None else "None"
                 raise AssertionError(
-                    f"{path.name}:{fn.name} raises a non-name expression: {ast.dump(exc)}"
+                    f"{path.name}:{fn.name} raises a non-name expression: {detail}"
                 )
             assert exc_name == "NotImplementedError", (
                 f"{path.name}:{fn.name} raises {exc_name}, not NotImplementedError"

@@ -1,6 +1,5 @@
 def test_cli_help():
     import subprocess
-    import sys
 
     res = subprocess.run(
         [

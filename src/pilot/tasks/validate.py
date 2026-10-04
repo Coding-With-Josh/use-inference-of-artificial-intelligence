@@ -93,9 +93,11 @@ def _run_one(task_dir: Path, target: str, timeout: int, image: str | None) -> Ta
     # A run that executed nothing proves nothing. This is the check whose
     # absence previously let a collection error masquerade as a result.
     if exit_class == "no_tests_collected":
-        problems.append(f"pytest collected no tests (exit 5) -- {result['stderr'].strip()[:200]}")
+        detail = result["stderr"].strip()[:200]
+        problems.append(f"pytest collected no tests (exit 5) -- {detail}")
     elif exit_class == "usage_error":
-        problems.append(f"pytest collection/usage error (exit 4) -- {result['stderr'].strip()[:200]}")
+        detail = result["stderr"].strip()[:200]
+        problems.append(f"pytest collection/usage error (exit 4) -- {detail}")
     elif collected == 0:
         problems.append("pytest collected 0 tests -- nothing was verified")
     elif exit_class == "timeout":

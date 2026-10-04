@@ -8,7 +8,6 @@ empty config.
 import json
 
 import pytest
-
 from config_loader import load_config
 
 
@@ -54,12 +53,14 @@ def test_non_integer_port_is_rejected(tmp_path):
 
 
 def test_malformed_json_raises(tmp_path):
-    with pytest.raises(Exception):
+    # json.JSONDecodeError is a ValueError; either satisfies the contract, but a
+    # blind `except Exception` would not.
+    with pytest.raises((ValueError, json.JSONDecodeError)):
         load_config(_write(tmp_path, "{not json"))
 
 
 def test_missing_file_raises(tmp_path):
-    with pytest.raises(Exception):
+    with pytest.raises((FileNotFoundError, OSError)):
         load_config(str(tmp_path / "does_not_exist.json"))
 
 

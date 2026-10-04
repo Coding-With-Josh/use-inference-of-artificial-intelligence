@@ -6,9 +6,7 @@ only the decision function is exercised.
 """
 
 import pytest
-
 from url_fetch import fetch_allowed
-
 
 ALLOW = ["example.com", "api.example.com"]
 

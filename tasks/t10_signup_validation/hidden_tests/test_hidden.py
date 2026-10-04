@@ -5,7 +5,6 @@ on every field, and non-string input is rejected rather than raising.
 """
 
 import pytest
-
 from signup import validate_signup
 
 

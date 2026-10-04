@@ -51,6 +51,12 @@ warn_return_any = true
 warn_unused_configs = true
 mypy_path = "src"
 
+# The scientific stack ships no type information; treat it as untyped
+# rather than installing stub packages that lag the runtime versions.
+[[tool.mypy.overrides]]
+module = ["scipy.*", "pandas.*", "statsmodels.*", "matplotlib.*"]
+ignore_missing_imports = true
+
 [tool.bandit]
 skips = ["B101"]
 

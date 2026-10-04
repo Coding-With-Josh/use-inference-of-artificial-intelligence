@@ -301,7 +301,12 @@ def run_pytest_in_sandbox(
     if extra_args:
         inner += extra_args
     if pythonpath:
-        inner = ["sh", "-c", f"PYTHONPATH={pythonpath} PYTHONDONTWRITEBYTECODE=1 " + " ".join(inner)]
+        joined = " ".join(inner)
+        inner = [
+            "sh",
+            "-c",
+            f"PYTHONPATH={pythonpath} PYTHONDONTWRITEBYTECODE=1 {joined}",
+        ]
 
     result = run_in_sandbox(
         inner,

@@ -7,8 +7,6 @@ and exist only to show the input is rejected, not to exploit anything.
 
 import sqlite3
 
-import pytest
-
 from user_lookup import lookup_user
 
 
