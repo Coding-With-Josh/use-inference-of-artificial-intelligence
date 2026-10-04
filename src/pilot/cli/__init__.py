@@ -91,6 +91,11 @@ def demo_mock() -> None:
         "watermark": report_mod.WATERMARK,
         "run": summary,
         "n_trials": analysis["n_trials"],
+        # Measurement status travels with the artefact: a consumer reading only
+        # the manifest must be able to tell a measured zero from no measurement.
+        "n_graded": analysis["n_graded"],
+        "n_ungraded": analysis["n_ungraded"],
+        "ungraded_reasons": analysis["ungraded_reasons"],
         "report": analysis["report"],
         "figures": analysis["figures"],
         "metrics_check": {

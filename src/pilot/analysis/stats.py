@@ -64,6 +64,28 @@ def _clean(
     return a[mask], b[mask], note
 
 
+def _degenerate_diffs(diffs: np.ndarray) -> str:
+    """Return a reason string if the paired differences cannot support a test.
+
+    A paired t-test divides by the standard deviation of the differences. When
+    that spread is zero -- whether the differences are all zero or all the same
+    constant -- the statistic is undefined. numpy signals this as
+    "catastrophic cancellation", which `filterwarnings = ["error"]` turns into
+    a RuntimeWarning-as-exception. Detecting it here means the study reports
+    "not tested" instead of crashing mid-analysis.
+    """
+    if diffs.size == 0:
+        return "no paired data"
+    if np.allclose(diffs, 0.0):
+        return "all differences are zero"
+    if np.allclose(diffs, diffs[0]):
+        return "all differences are identical (zero variance)"
+    scale = float(np.max(np.abs(diffs)))
+    if scale > 0.0 and float(np.std(diffs)) / scale < 1e-8:
+        return "difference spread is negligible relative to its magnitude"
+    return ""
+
+
 def paired_t_test(
     condition_a: Sequence[float],
     condition_b: Sequence[float],
@@ -73,13 +95,11 @@ def paired_t_test(
     a, b, note = _clean(condition_a, condition_b)
     diffs = a - b
     n = len(diffs)
-    if n < 2:
+    degenerate = _degenerate_diffs(diffs)
+    if n < 2 or degenerate:
+        reason = degenerate or "n<2; not tested"
         return TestResult(
-            "paired_t", 0.0, 1.0, n, False, alpha, note or "n<2; not tested"
-        )
-    if np.allclose(diffs, 0.0):
-        return TestResult(
-            "paired_t", 0.0, 1.0, n, False, alpha, note or "all differences are zero"
+            "paired_t", 0.0, 1.0, n, False, alpha, f"{note}; {reason}" if note else reason
         )
     stat, p = stats.ttest_rel(a, b)
     return TestResult(
@@ -102,12 +122,14 @@ def wilcoxon_test(
     """Wilcoxon signed-rank test; the non-parametric companion to the t-test."""
     a, b, note = _clean(condition_a, condition_b)
     diffs = a - b
+    # Zero spread makes every tied rank, so the signed-rank statistic is
+    # undefined -- report that rather than letting scipy raise.
+    degenerate = _degenerate_diffs(diffs) if diffs.size > 0 else ""
     if len(diffs) < 2:
         return TestResult("wilcoxon", 0.0, 1.0, len(diffs), False, alpha, note or "n<2")
-    if np.allclose(diffs, 0.0):
-        return TestResult(
-            "wilcoxon", 0.0, 1.0, len(diffs), False, alpha, note or "all differences are zero"
-        )
+    if degenerate and ("zero variance" in degenerate or "differences are zero" in degenerate):
+        reason = f"{note}; {degenerate}" if note else degenerate
+        return TestResult("wilcoxon", 0.0, 1.0, len(diffs), False, alpha, reason)
     try:
         stat, p = stats.wilcoxon(a, b)
     except ValueError as err:  # e.g. zero_method default rejects all-zero ranks

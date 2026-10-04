@@ -120,7 +120,7 @@ def _hidden_test_names(task_dir: Path) -> set[str]:
     return names
 
 
-def _visible_tests_text(task_id: Path) -> str:
+def _visible_tests_text(task_id: str) -> str:
     """The published example tests -- the only genuinely public source.
 
     This deliberately does *not* include spec.md or the starter. If it did, the
@@ -134,7 +134,7 @@ def _visible_tests_text(task_id: Path) -> str:
     return "\n".join(chunks)
 
 
-def _hidden_test_literals(task_id: Path) -> set[str]:
+def _hidden_test_literals(task_id: str) -> set[str]:
     """Distinctive string literals that exist *only* in the hidden suite.
 
     A literal already shown in a visible test is a public example by
@@ -322,9 +322,6 @@ def test_read_allowed_refuses_hidden_tests(tmp_path) -> None:
 @pytest.mark.parametrize("task_id", TASK_IDS)
 def test_load_task_context_never_reads_hidden_tests(task_id: str) -> None:
     ctx = load_task_context(TASKS_DIR / task_id)
-    hidden_source = "\n".join(
-        p.read_text(encoding="utf-8") for p in (TASKS_DIR / task_id / "hidden_tests").glob("*.py")
-    )
     for value in ctx.prompt_sources.values():
         # No hidden-test function name may appear in any prompt source.
         for name in _hidden_test_names(TASKS_DIR / task_id):

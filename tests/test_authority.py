@@ -7,7 +7,6 @@ named: absolute paths, parent traversal, NUL bytes, and symlink redirection.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import pytest
 

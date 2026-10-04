@@ -45,6 +45,11 @@ def run_hidden_tests(
         "passed": passed,
         "total": total,
         "failed": failed,
+        # Collection/fixture errors are counted separately from tests: pytest
+        # reports "Interrupted: 1 error during collection", and the summary
+        # parser records that as one item. A caller that gates only on `total`
+        # would score a suite that never ran.
+        "errors": result["errors"],
         "passed_ratio": (passed / total) if total else 0.0,
         "failed_nodes": result["failed_nodes"],
         "exit_code": result["exit_code"],

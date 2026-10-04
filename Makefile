@@ -4,7 +4,10 @@ install:
 	uv sync --dev
 
 sandbox-image:
-	docker build --tag pilot-sandbox:latest --file sandbox/Dockerfile sandbox
+	@image=$$(uv run python -c "from pilot.config.config import load_config; print(load_config().sandbox.docker_image)"); \
+	echo "building $$image"; \
+	docker build --tag "$$image" --file sandbox/Dockerfile sandbox; \
+	echo "built $$image"
 
 test:
 	uv run pytest

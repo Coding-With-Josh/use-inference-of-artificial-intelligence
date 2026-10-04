@@ -148,7 +148,11 @@ class ConditionC(Condition):
                 code = self._strip_code_fence(response)
                 iterations += 1
         else:
-            self._write(authority, code)
+            # Even with guardrails ablated, a refused write must be recorded --
+            # silently dropping it would hide a scoped-authority violation.
+            _, write_error = self._write(authority, code)
+            if write_error is not None:
+                rejected.append(write_error)
 
         return TrialResult(
             condition=self.name,

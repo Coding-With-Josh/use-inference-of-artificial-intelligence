@@ -1,5 +1,12 @@
 # pilot model experiment
 
+**status: the pipeline is built and verified; the study has not been run.**
+`make test`, `make tasks-validate` and `make demo-mock` all pass, but every
+number this repo can currently produce comes from a mock model and is
+watermarked as such. There are no results from a real model, and no results
+from participants. See `docs/handoff.md` for what is built, what is verified,
+and what is still missing.
+
 this repo is the experiment code and materials for the preprint *Use Inference of Artificial Intelligence: The Pilot Model*. it implements a testable version of the pilot model: ai output is inference (a probability-weighted guess), not a fact; the user is the pilot, and the ai is the instrument. the repo is designed to be reproducible by a stranger in one afternoon.
 
 the core idea is simple: safety comes from three levers controlled by the pilot. context lowers e (chance the output is wrong in a way that matters). checking raises d (chance the error is caught before it takes effect). limits bound i (impact if an error lands). e[harm] = e*(1-d)*i.
@@ -12,12 +19,16 @@ all numbers must come from code that actually ran. synthetic data lives only in 
 
 1. install python 3.11+ and uv: see https://docs.astral.sh/uv/.
 2. `make install`
-3. copy `.env.example` to `.env` and fill only what you need (api keys are never logged).
-4. `make test`  # runs lint, typecheck, unit tests
-5. `make demo-mock`  # full pipeline with mock model (requires docker)
-6. `make study1-plan`  # dry run with cost estimate
-7. `make study1`  # run study 1
-8. `make study1-analyze`  # stats and report
+3. `make sandbox-image`  # build the pinned, non-root, no-network sandbox image
+4. copy `.env.example` to `.env` and fill only what you need (api keys are never logged).
+5. `make test`  # unit and integration tests, 85% coverage gate
+6. `make lint`  # ruff
+7. `make typecheck`  # mypy
+8. `make tasks-validate`  # every reference passes, every starter fails (needs docker)
+9. `make demo-mock`  # full pipeline with mock model (needs docker)
+10. `make study1-plan`  # dry run with cost estimate
+11. `make study1-run`  # run study 1 (needs api keys)
+12. `make study1-analyze`  # stats and report
 
 ## cost and safety notes
 

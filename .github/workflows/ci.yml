@@ -29,5 +29,48 @@ jobs:
       - name: Type check
         run: uv run mypy src tests
 
+      # The scoring, validation and unsafe-fixture tests shell out to Docker, and
+      # the 85% coverage gate is only met when they actually run. Without this
+      # step they skip silently, coverage drops, and CI fails on the gate for the
+      # wrong reason -- or, if the gate were relaxed, everything would pass while
+      # the graded path went untested.
+      - name: Build sandbox image
+        run: make sandbox-image
+
       - name: Unit tests
         run: uv run pytest
+
+      # The corpus contract: every reference must pass its hidden suite and every
+      # starter must fail it. Nothing else in the pipeline checks this.
+      - name: Validate task corpus
+        run: make tasks-validate
+
+      - name: Demo (mock model, end to end)
+        run: make demo-mock
+
+      # `make demo-mock` exiting 0 only proves the process ran. These assertions
+      # are what prove it produced a real, watermarked, measured analysis.
+      - name: Check demo artefacts
+        run: |
+          set -euo pipefail
+          out=results/demo-mock
+          test -f "$out/report.md"
+          test -f "$out/manifest.json"
+          test -f "$out/trials.jsonl"
+          grep -q 'synthetic data, pipeline test only' "$out/report.md"
+          python - <<'PY'
+          import json, pathlib
+          manifest = json.loads(pathlib.Path("results/demo-mock/manifest.json").read_text())
+          assert manifest["synthetic"] is True, "demo must declare itself synthetic"
+          assert manifest["watermark"] == "synthetic data, pipeline test only"
+          assert manifest["n_trials"] > 0, "the demo recorded no trials"
+          assert manifest["n_graded"] > 0, (
+              "no trial was graded, so the demo never exercised scoring: "
+              f"{manifest['ungraded_reasons']}"
+          )
+          assert manifest["n_ungraded"] == 0
+          print(
+              f"demo ok: {manifest['n_trials']} trials, "
+              f"{manifest['n_graded']} graded, {len(manifest['figures'])} figures"
+          )
+          PY

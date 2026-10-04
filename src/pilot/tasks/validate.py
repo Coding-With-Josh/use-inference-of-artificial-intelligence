@@ -16,6 +16,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, cast
 
 from pilot.config.config import SandboxConfig
 from pilot.sandbox import docker_runner
@@ -57,12 +58,62 @@ def discover_tasks(tasks_dir: Path | None = None) -> list[Path]:
     return sorted(p for p in base.iterdir() if p.is_dir() and not p.name.startswith("_"))
 
 
+# A run in one of these classes did not produce a usable verdict. They are
+# checked before any reference/starter expectation, because "no tests ran" has
+# to be reported as such -- never as a pass, and never as a task failure.
+UNUSABLE_EXIT_CLASSES = ("timeout", "launch_error", "docker_daemon_error")
+
+
+def evaluate_run(target: str, result: dict[str, Any], timeout: int | None = None) -> list[str]:
+    """Decide whether one sandbox run met the contract. Returns the problems.
+
+    Pure: it takes an already-collected result dict and returns a verdict, with
+    no I/O. That separation is the point -- the acceptance rules are the part
+    most worth testing exhaustively, and burying them inside the function that
+    shells out to Docker would make them testable only by running Docker.
+    """
+    expected_pass = target == "reference"
+    exit_class = str(result["exit_class"])
+    exit_code = int(str(result["exit_code"]))
+    collected = int(str(result["collected"]))
+    failed = int(str(result["failed"]))
+    failed_nodes = [str(node) for node in cast("list[object]", result["failed_nodes"])]
+    stderr = str(cast("str", result.get("stderr", ""))).strip()[:200]
+
+    # A run that executed nothing proves nothing. This is the check whose
+    # absence previously let a collection error masquerade as a result.
+    if exit_class == "no_tests_collected":
+        return [f"pytest collected no tests (exit 5) -- {stderr}"]
+    if exit_class == "usage_error":
+        return [f"pytest collection/usage error (exit 4) -- {stderr}"]
+    if collected == 0:
+        return ["pytest collected 0 tests -- nothing was verified"]
+    if exit_class == "timeout":
+        return [f"sandbox run timed out after {timeout}s" if timeout else "sandbox run timed out"]
+    if exit_class in UNUSABLE_EXIT_CLASSES:
+        return [f"sandbox could not run the suite: {exit_class}"]
+
+    if expected_pass:
+        if exit_code != 0:
+            return [f"reference must pass but exited {exit_code} ({exit_class})"]
+        if failed:
+            return [f"reference had {failed} failing test(s): {failed_nodes}"]
+        return []
+
+    if exit_code == 0:
+        return ["starter passed every test -- it must fail them"]
+    if exit_code != 1:
+        return [f"starter exited {exit_code} ({exit_class}); expected 1 (tests failed)"]
+    if failed == 0:
+        return ["starter exited 1 but no tests were reported failing"]
+    return []
+
+
 def _run_one(task_dir: Path, target: str, timeout: int, image: str | None) -> TaskResult:
     """Run `target`'s tests against both suites inside the sandbox."""
-    impl_dir = task_dir / target
     expected_pass = target == "reference"
 
-    if not impl_dir.is_dir():
+    if not (task_dir / target).is_dir():
         return TaskResult(
             task_id=task_dir.name,
             target=target,
@@ -83,50 +134,17 @@ def _run_one(task_dir: Path, target: str, timeout: int, image: str | None) -> Ta
         image=image,
     )
 
-    collected = result["collected"]
-    failed = result["failed"]
-    exit_code = result["exit_code"]
-    exit_class = result["exit_class"]
-
-    problems: list[str] = []
-
-    # A run that executed nothing proves nothing. This is the check whose
-    # absence previously let a collection error masquerade as a result.
-    if exit_class == "no_tests_collected":
-        detail = result["stderr"].strip()[:200]
-        problems.append(f"pytest collected no tests (exit 5) -- {detail}")
-    elif exit_class == "usage_error":
-        detail = result["stderr"].strip()[:200]
-        problems.append(f"pytest collection/usage error (exit 4) -- {detail}")
-    elif collected == 0:
-        problems.append("pytest collected 0 tests -- nothing was verified")
-    elif exit_class == "timeout":
-        problems.append(f"sandbox run timed out after {timeout}s")
-    elif exit_class in ("launch_error", "docker_daemon_error"):
-        problems.append(f"sandbox could not run the suite: {exit_class}")
-    elif expected_pass:
-        if exit_code != 0:
-            problems.append(f"reference must pass but exited {exit_code} ({exit_class})")
-        elif failed:
-            problems.append(f"reference had {failed} failing test(s): {result['failed_nodes']}")
-    else:
-        if exit_code == 0:
-            problems.append("starter passed every test -- it must fail them")
-        elif exit_code != 1:
-            problems.append(f"starter exited {exit_code} ({exit_class}); expected 1 (tests failed)")
-        elif failed == 0:
-            problems.append("starter exited 1 but no tests were reported failing")
-
+    problems = evaluate_run(target, result, timeout)
     return TaskResult(
         task_id=task_dir.name,
         target=target,
         expected_pass=expected_pass,
-        exit_code=exit_code,
-        exit_class=exit_class,
-        collected=collected,
-        failed=failed,
-        passed=result["passed"],
-        failed_nodes=result["failed_nodes"],
+        exit_code=int(str(result["exit_code"])),
+        exit_class=str(result["exit_class"]),
+        collected=int(str(result["collected"])),
+        failed=int(str(result["failed"])),
+        passed=int(str(result["passed"])),
+        failed_nodes=[str(node) for node in result["failed_nodes"]],
         problems=problems,
     )
 

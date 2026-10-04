@@ -14,6 +14,7 @@ Operational properties required of a resumable, budget-guarded runner:
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,7 @@ from pilot.config.config import Config, load_config
 from pilot.logging.logger import JsonlLogger
 from pilot.models.mock import MockModel
 from pilot.prompts import load_task_context
-from pilot.scoring import metrics
+from pilot.scoring import hidden_tests, metrics
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 TASKS_DIR = REPO_ROOT / "tasks"
@@ -121,14 +122,19 @@ def run(
     tasks_dir: Path | None = None,
     dry_run: bool = False,
     resume: bool = True,
+    timeout: int | None = None,
 ) -> dict[str, Any]:
     """Execute the study-1 trial matrix.
 
     Returns a summary dict. In dry_run mode nothing is executed and no model is
     called; the planned trial list is still returned so the control flow is
     exercised.
+
+    Every trial that produces code is graded against the task's hidden suite in
+    the sandbox. `timeout` bounds each sandbox run (grading and guardrails).
     """
     cfg = config or load_config()
+    timeout = timeout or max(cfg.sandbox.timeout_s, 120)
     planned = plan(cfg, tasks_dir)
     if not planned["within_budget"]:
         raise BudgetExceeded(
@@ -175,8 +181,14 @@ def run(
                 spent += trial_cost
                 continue
 
+            # Condition C writes its solution through a WriteAuthority, so the
+            # workdir must be a per-trial scratch copy -- never the task itself.
+            # Handing it tasks/<id>/ would let a run mutate the graded corpus,
+            # which is both an integrity problem and a way to contaminate a
+            # later validation.
+            workspace = _stage_workspace(run_id, task_path, condition)
             ctx = load_task_context(task_path)
-            trial = _build_condition(condition, model, task_path, cfg.experiment.ablation)
+            trial = _build_condition(condition, model, workspace, cfg.experiment.ablation)
             result = trial.run(ctx)
 
             logger.log_trial(
@@ -187,9 +199,7 @@ def run(
                     "guardrail_rounds": result.guardrail_rounds,
                     "ablated": result.ablated,
                     "rejected_writes": result.rejected_writes,
-                    "hidden_pass_rate": 0.0,
-                    "task_solved": 0,
-                    "defect_count": 0,
+                    **grade_trial(task_path, workspace, result.final_code, timeout=timeout),
                     "synthetic": True,
                 }
             )
@@ -207,6 +217,132 @@ def run(
         "synthetic": True,
         "log": str(log_path),
     }
+
+
+# Task files a condition may see. The workspace is a copy, so copying the whole
+# task directory is safe; excluding hidden_tests keeps the graded suite out of
+# anything a condition can reach.
+WORKSPACE_SOURCES = ("spec.md", "meta.yaml", "starter", "visible_tests")
+
+# Exit classes that represent a real pass/fail verdict from the hidden suite.
+# Anything else (interrupted, usage error, nothing collected, timeout, launcher
+# failure) means the suite did not produce a score.
+GRADABLE_EXIT_CLASSES = frozenset({"passed", "tests_failed"})
+
+# Fields grade_trial always returns, so a trial record has one shape whether or
+# not it could be graded.
+UNGRADED_METRICS: dict[str, Any] = {
+    "graded": False,
+    "hidden_pass_rate": 0.0,
+    "task_solved": 0,
+    "defect_count": 0,
+    "hidden_tests_total": 0,
+    "grade_exit_class": "not_graded",
+    "grade_errors": 0,
+}
+
+
+def _entrypoint_module(task_path: Path) -> str | None:
+    """The task's solution module, e.g. `merge_intervals.py`.
+
+    The hidden tests import this by name, so a trial's code has to land on this
+    exact filename to be graded at all.
+    """
+    modules = sorted(
+        p.name for p in (task_path / "starter").glob("*.py") if p.name != "__init__.py"
+    )
+    return modules[0] if len(modules) == 1 else None
+
+
+def grade_trial(
+    task_path: Path,
+    workspace: Path,
+    code: str,
+    timeout: int | None = None,
+    image: str | None = None,
+) -> dict[str, Any]:
+    """Score a trial's code against the task's hidden suite, in the sandbox.
+
+    Grading runs in a *separate* directory from the condition's workspace, and
+    that directory is the first place hidden_tests is ever copied. The condition
+    never receives it, so scoring cannot leak the graded suite backwards into
+    the trial.
+
+    Returns metrics plus `graded`. `graded: False` means no verdict was produced
+    -- which is reported distinctly from a genuine score of 0, so "we could not
+    measure this" never renders as "this scored nothing".
+    """
+    entrypoint = _entrypoint_module(task_path)
+    if entrypoint is None:
+        return {**UNGRADED_METRICS, "grade_reason": "could not identify the task entrypoint"}
+    if not code.strip():
+        return {**UNGRADED_METRICS, "grade_reason": "trial produced no code"}
+
+    grading_dir = workspace.parent / f"{workspace.name}__grading"
+    if grading_dir.exists():
+        shutil.rmtree(grading_dir)
+    grading_dir.mkdir(parents=True)
+    # The trial's code goes on the entrypoint filename the hidden tests import.
+    shutil.copytree(workspace / "starter", grading_dir / "starter", dirs_exist_ok=True)
+    (grading_dir / "starter" / entrypoint).write_text(code, encoding="utf-8")
+    shutil.copytree(task_path / "hidden_tests", grading_dir / "hidden_tests")
+
+    scored = hidden_tests.run_hidden_tests(
+        grading_dir, "starter", timeout=timeout, image=image
+    )
+
+    # A grade exists only if the suite actually ran and produced a pass/fail
+    # verdict. Everything else is a measurement failure, and a measurement
+    # failure reported as 0.0 is indistinguishable from a genuine all-fail.
+    #
+    # `errors` matters as much as `total`: when a trial's code does not even
+    # import, pytest prints "Interrupted: 1 error during collection", and the
+    # summary parser counts that error as one collected item. Gating on
+    # `total > 0` alone would report a score of 0 for a suite that never ran.
+    unusable = scored["exit_class"] not in GRADABLE_EXIT_CLASSES or scored["total"] == 0
+    if unusable or scored["errors"]:
+        reason = (
+            f"hidden suite did not run: exit_class={scored['exit_class']}, "
+            f"errors={scored['errors']}, collected={scored['total']}"
+        )
+        return {
+            **UNGRADED_METRICS,
+            "grade_exit_class": scored["exit_class"],
+            "grade_errors": scored["errors"],
+            "grade_reason": reason,
+        }
+
+    outcomes = [True] * scored["passed"] + [False] * scored["failed"]
+    return {
+        "graded": True,
+        "hidden_pass_rate": metrics.hidden_pass_rate(outcomes),
+        "task_solved": metrics.task_solved(outcomes),
+        "defect_count": metrics.defect_count(outcomes),
+        "hidden_tests_total": scored["total"],
+        "grade_exit_class": scored["exit_class"],
+        "grade_errors": 0,
+        "failed_nodes": scored["failed_nodes"],
+    }
+
+
+def _stage_workspace(run_id: str, task_path: Path, condition: str) -> Path:
+    """Copy a task into a scratch workspace for one trial.
+
+    The copy is what the condition writes into. `hidden_tests` is deliberately
+    not copied: no condition needs it, and leaving it out means a workspace
+    cannot leak the graded suite into a prompt or a repair loop.
+    """
+    workspace = REPO_ROOT / "results" / run_id / "work" / f"{task_path.name}__{condition}"
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True, exist_ok=True)
+    for name in WORKSPACE_SOURCES:
+        source = task_path / name
+        if source.is_dir():
+            shutil.copytree(source, workspace / name)
+        elif source.exists():
+            shutil.copy2(source, workspace / name)
+    return workspace
 
 
 def load_trials(run_id: str = "study1") -> list[dict[str, Any]]:
@@ -240,8 +376,18 @@ def analyze(
     out_dir = Path(output_dir or (REPO_ROOT / "results" / run_id / "analysis"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # A trial that could not be graded carries hidden_pass_rate 0.0, which is
+    # indistinguishable from a trial that genuinely scored zero. Averaging it in
+    # would turn a measurement failure into a result, so statistics are built
+    # from graded trials only and the ungraded ones are counted and reported.
+    graded = [t for t in trials if t.get("graded", True)]
+    ungraded = [t for t in trials if not t.get("graded", True)]
+    ungraded_reasons = sorted(
+        {str(t.get("grade_reason") or "no reason recorded") for t in ungraded}
+    )
+
     by_condition: dict[str, list[dict[str, Any]]] = {}
-    for record in trials:
+    for record in graded:
         by_condition.setdefault(record.get("condition", "unknown"), []).append(record)
 
     condition_stats = {
@@ -257,15 +403,18 @@ def analyze(
             )
 
     mixed = stats.mixed_effects_model(
-        outcomes=[float(t.get("hidden_pass_rate", 0.0)) for t in trials],
-        groups=[t.get("condition", "unknown") for t in trials],
-        subjects=[t.get("participant_id", t.get("task_id", "unknown")) for t in trials],
-        tasks=[t.get("task_id", "unknown") for t in trials],
-    ) if trials else {"converged": False, "note": "no trials recorded", "n": 0, "coef": {}}
+        outcomes=[float(t.get("hidden_pass_rate", 0.0)) for t in graded],
+        groups=[t.get("condition", "unknown") for t in graded],
+        subjects=[t.get("participant_id", t.get("task_id", "unknown")) for t in graded],
+        tasks=[t.get("task_id", "unknown") for t in graded],
+    ) if graded else {"converged": False, "note": "no graded trials", "n": 0, "coef": {}}
 
     analysis = {
         "run_id": run_id,
         "n_trials": len(trials),
+        "n_graded": len(graded),
+        "n_ungraded": len(ungraded),
+        "ungraded_reasons": ungraded_reasons,
         "synthetic": True,
         "by_condition": condition_stats,
         "contrasts": contrasts,
@@ -274,7 +423,7 @@ def analyze(
     }
 
     figure_paths: list[Path] = []
-    if figures and trials:
+    if figures and by_condition:
         values = {
             name: [float(t.get("hidden_pass_rate", 0.0)) for t in records]
             for name, records in by_condition.items()

@@ -42,12 +42,51 @@ def render_report(analysis: dict[str, Any], figures: list[Path] | None = None) -
         "",
     ]
 
+    graded = analysis.get("n_graded")
+    ungraded = int(analysis.get("n_ungraded", 0) or 0)
+    if graded is not None:
+        lines += [
+            f"- trials graded: {graded}",
+            f"- trials not graded: {ungraded}",
+            "",
+        ]
+
+    # Ungraded trials are the one thing that most easily reads as a result when
+    # it is not, so it is stated before any table, with the reason.
+    if ungraded:
+        lines += [
+            f"> **warning: {ungraded} of {trials} trials could not be graded.**",
+            "> Their metrics are absent from every table below -- they are not",
+            "> zeros. A trial with no measurement contributes nothing to these",
+            "> statistics.",
+            "",
+        ]
+        for reason in analysis.get("ungraded_reasons", []) or ["no reason recorded"]:
+            lines.append(f"> - {reason}")
+        if not analysis.get("by_condition"):
+            lines += [
+                "",
+                "No trial produced a grade, so no outcome statistics follow.",
+            ]
+        lines.append("")
+
     if trials == 0:
         lines += [
             "## no data",
             "",
             "No trials were recorded, so no statistics are reported. This is a",
             "deliberate blank, not a zero result: no claim is being made here.",
+            "",
+        ]
+        return "\n".join(lines)
+
+    if not analysis.get("by_condition"):
+        lines += [
+            "## no graded data",
+            "",
+            "Trials were recorded but none of them produced a measurable score,",
+            "so no outcome statistics are reported. This is a measurement failure,",
+            "not a zero result.",
             "",
         ]
         return "\n".join(lines)
