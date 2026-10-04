@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+
 FIXTURES = [
     ("t06_user_lookup", ["../hidden_tests/test_hidden.py"]),
     ("t07_file_serving", ["../hidden_tests/test_hidden.py"]),
@@ -19,8 +20,20 @@ def test_unsafe_fails_hidden(task, tests):
     unsafe_dir = Path(__file__).parent.parent / "tests" / "fixtures" / "unsafe"
     env = os.environ.copy()
     env["PYTHONPATH"] = str(unsafe_dir) + ":" + str(root)
+    cmd = [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "pytest",
+        *tests,
+        "--override-ini=addopts=",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+    ]
     res = subprocess.run(
-        ["uv", "run", "python", "-m", "pytest", *tests, "--override-ini=addopts=", "-q", "-p", "no:cacheprovider"],
+        cmd,
         cwd=str(root),
         env=env,
         stdout=subprocess.PIPE,
