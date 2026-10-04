@@ -1,0 +1,35 @@
+# env
+.env
+.env.local
+
+# python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# build
+build/
+dist/
+
+# results - keep structure
+results/*
+!results/.gitkeep
+
+# synthetic - keep structure but data files generated later ignored except .gitkeep
+synthetic/*
+!synthetic/.gitkeep
+
+# os
+.DS_Store
+*.swp
+*.swo
+
+# vscode/idea
+.vscode/
+.idea/

@@ -1,0 +1,37 @@
+cff-version: 1.2.0
+title: "Use Inference of Artificial Intelligence: The Pilot Model"
+message: "If you use this software in your research, please cite it as below."
+type: software
+authors:
+  - family-names: Idele
+    given-names: Joshua
+    email: codewithjoshh@gmail.com
+repository-code: "https://github.com/coding-with-josh/pilot-model-experiment"
+license: MIT
+abstract: |
+  Experiment code and materials for testing the Pilot Model: inference is probabilistic,
+  the user is the pilot, and safety depends on context, verification, and bounded authority.
+keywords:
+  - ai inference
+  - human-ai collaboration
+  - human oversight
+  - verification
+  - software engineering
+preferred-citation:
+  type: article
+  title: "Use Inference of Artificial Intelligence: The Pilot Model"
+  authors:
+    - family-names: Idele
+      given-names: Joshua
+      email: codewithjoshh@gmail.com
+  year: 2026
+  month: 10
+  abstract: |
+    Public and technical debate often sorts AI systems into "safe" and "dangerous."
+    This paper argues the locus of risk and value is inferential: AI produces probabilistic
+    inferences, not authority. We propose the Pilot Model with three levers (context,
+    verification, bounded impact) and testable hypotheses.
+  doi: TODO(joshua)
+  journal: "Preprint"
+  publisher: "Independent Researcher"
+  url: TODO(joshua)
