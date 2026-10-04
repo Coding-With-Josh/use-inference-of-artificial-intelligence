@@ -34,11 +34,10 @@ def validate() -> int:
                 "-q",
             ]
             try:
-                # run from parent task dir's reference as cwd
-                cp = _run_in_sandbox(tid / "reference", cmd)
+                cp = _run_in_sandbox(ref, cmd)
                 if cp.returncode != 0:
                     failures.append((tid.name, "reference"))
-            except Exception as e:
+            except Exception:
                 failures.append((tid.name, "reference"))
         st = tid / "starter"
         if st.exists():
@@ -53,9 +52,9 @@ def validate() -> int:
                 "-q",
             ]
             try:
-                cp = _run_in_sandbox(tid / "starter", cmd)
+                cp = _run_in_sandbox(st, cmd)
                 if cp.returncode == 0:
-                    failures.append((tid.name, "starter", "unexpected pass"))
+                    failures.append((tid.name, "starter"))
             except Exception:
                 pass
     if failures:
