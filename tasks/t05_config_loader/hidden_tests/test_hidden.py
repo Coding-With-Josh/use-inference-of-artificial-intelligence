@@ -1,7 +1,6 @@
 import json
 import tempfile
 from pathlib import Path
-
 import pytest
 from config_loader import load_config
 
@@ -12,7 +11,7 @@ def test_invalid_port():
         json.dump(cfg, f)
         p = f.name
     try:
-        with pytest.raises(Exception):
+        with pytest.raises((ValueError, TypeError)):
             load_config(p)
     finally:
         Path(p).unlink()
@@ -24,7 +23,7 @@ def test_missing_host():
         json.dump(cfg, f)
         p = f.name
     try:
-        with pytest.raises(Exception):
+        with pytest.raises((ValueError, TypeError)):
             load_config(p)
     finally:
         Path(p).unlink()
