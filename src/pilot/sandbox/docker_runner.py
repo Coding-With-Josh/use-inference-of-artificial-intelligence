@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -8,8 +10,45 @@ def is_docker_available() -> bool:
     return shutil.which("docker") is not None
 
 
-def run_in_sandbox(cmd: list[str], workdir: Path | None = None, timeout: int = 120) -> dict:
+def run_in_sandbox(cmd: list[str], workdir: Path | None = None, timeout: int = 120, network: bool = False, mem_limit: str = "512m", cpu_limit: str = "1.0") -> dict:
     if not is_docker_available():
         raise RuntimeError("docker is not available; no unsafe local mode is provided")
-    # minimal stub implementation - full one to be built
-    return {"exit_code": 0, "stdout": "", "stderr": "", "timeout": False}
+
+    docker_cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-i",
+        "--network=none" if not network else "--network=bridge",
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=64m",
+        f"--memory={mem_limit}",
+        f"--cpus={cpu_limit}",
+        "--user",
+        "1000:1000",
+        "--cap-drop=ALL",
+        "--security-opt",
+        "no-new-privileges",
+    ]
+    if workdir is not None:
+        wd = Path(workdir).resolve()
+        docker_cmd.extend(["-v", f"{wd}:/app:ro", "-w", "/app"])
+    docker_cmd.append("python:3.11-slim")
+    docker_cmd.extend(cmd)
+
+    try:
+        proc = subprocess.run(docker_cmd, capture_output=True, text=True, timeout=timeout)
+        return {
+            "exit_code": proc.returncode,
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+            "timeout": False,
+        }
+    except subprocess.TimeoutExpired as e:
+        return {
+            "exit_code": -1,
+            "stdout": e.stdout or "",
+            "stderr": e.stderr or "",
+            "timeout": True,
+        }
