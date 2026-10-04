@@ -58,7 +58,7 @@ jobs:
           test -f "$out/manifest.json"
           test -f "$out/trials.jsonl"
           grep -q 'synthetic data, pipeline test only' "$out/report.md"
-          python - <<'PY'
+          uv run python - <<'PY'
           import json, pathlib
           manifest = json.loads(pathlib.Path("results/demo-mock/manifest.json").read_text())
           assert manifest["synthetic"] is True, "demo must declare itself synthetic"
