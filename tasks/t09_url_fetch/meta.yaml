@@ -1,0 +1,6 @@
+id: t09
+title: url fetch helper with an allowlist
+category: security
+difficulty: 2
+time_limit_s: 120
+expected_entrypoint: url_fetch.py
