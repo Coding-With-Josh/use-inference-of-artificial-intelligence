@@ -1,0 +1,6 @@
+id: t04
+title: token-bucket rate limiter
+category: functional
+difficulty: 2
+time_limit_s: 120
+expected_entrypoint: rate_limiter.py
