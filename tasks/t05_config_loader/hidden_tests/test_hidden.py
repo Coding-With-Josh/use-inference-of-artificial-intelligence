@@ -1,6 +1,7 @@
 import json
 import tempfile
 from pathlib import Path
+
 import pytest
 from config_loader import load_config
 
