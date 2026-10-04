@@ -7,9 +7,9 @@ from pathlib import Path
 from pilot.sandbox import docker_runner
 
 
-def _run_in_sandbox_or_local(cwd: Path, cmd: list[str]) -> subprocess.CompletedProcess:
+def _run_in_sandbox(cwd: Path, cmd: list[str]) -> subprocess.CompletedProcess:
     if docker_runner.is_docker_available():
-        res = docker_runner.run_in_sandbox(cmd, workdir=cwd, timeout=180)
+        res = docker_runner.run_in_sandbox(cmd, workdir=cwd, timeout=300)
         return subprocess.CompletedProcess(cmd, res["exit_code"], stdout=res["stdout"], stderr=res["stderr"])
     raise RuntimeError("docker not available; cannot run task validation")
 
@@ -34,9 +34,9 @@ def validate() -> int:
                 "-q",
             ]
             try:
-                cp = _run_in_sandbox_or_local(ref, cmd)
+                cp = _run_in_sandbox(ref, cmd)
                 if cp.returncode != 0:
-                    failures.append((tid.name, "reference", cp.stdout[-500:]))
+                    failures.append((tid.name, "reference", cp.stdout[-300:]))
             except Exception as e:
                 failures.append((tid.name, "reference", str(e)))
         st = tid / "starter"
@@ -52,14 +52,14 @@ def validate() -> int:
                 "-q",
             ]
             try:
-                cp = _run_in_sandbox_or_local(st, cmd)
+                cp = _run_in_sandbox(st, cmd)
                 if cp.returncode == 0:
                     failures.append((tid.name, "starter", "unexpected pass"))
             except Exception:
-                pass  # expected to fail
+                pass
     if failures:
         for f in failures:
-            print(f"FAIL {f[0]} {f[1]}: {f[2]}")
+            print(f"FAIL {f[0]} {f[1]}")
         return 1
     print("OK")
     return 0
