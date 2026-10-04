@@ -34,11 +34,11 @@ def validate() -> int:
                 "-q",
             ]
             try:
-                cp = _run_in_sandbox(ref, cmd)
-                if cp.returncode != 0:
-                    failures.append((tid.name, "reference"))
+                cp = _run_in_sandbox(tid / "reference", cmd)
+                if cp.returncode != 0 or "passed" not in cp.stdout:
+                    failures.append(tid.name)
             except Exception:
-                failures.append((tid.name, "reference"))
+                failures.append(tid.name)
         st = tid / "starter"
         if st.exists():
             cmd = [
@@ -52,12 +52,14 @@ def validate() -> int:
                 "-q",
             ]
             try:
-                cp = _run_in_sandbox(st, cmd)
+                cp = _run_in_sandbox(tid / "starter", cmd)
                 if cp.returncode == 0:
-                    failures.append((tid.name, "starter"))
+                    failures.append(f"{tid.name}-starter")
             except Exception:
                 pass
     if failures:
+        for f in failures:
+            print(f"FAIL {f}")
         return 1
     print("OK")
     return 0
