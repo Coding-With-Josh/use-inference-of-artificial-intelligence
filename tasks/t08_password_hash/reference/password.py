@@ -1,5 +1,5 @@
-import os
 import hashlib
+import os
 
 
 def hash_password(pw):
@@ -25,6 +25,6 @@ def hmac_compare(a, b):
     if len(a) != len(b):
         return False
     result = 0
-    for x, y in zip(a, b):
+    for x, y in zip(a, b, strict=False):
         result |= x ^ y
     return result == 0

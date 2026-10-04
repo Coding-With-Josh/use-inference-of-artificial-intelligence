@@ -1,6 +1,5 @@
 import re
 
-
 EMAIL_RE = re.compile(r"[^@]+@[^@]+\.[^@]+")
 
 

@@ -1,5 +1,4 @@
-import re
-from password import hash_password, verify_password
+from password import hash_password
 
 
 def test_hash_not_plaintext():

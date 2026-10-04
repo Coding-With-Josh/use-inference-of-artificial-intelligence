@@ -11,6 +11,6 @@ def test_allowed():
 def test_disallowed():
     try:
         fetch_allowed("https://evil.com/data", ["example.com"])
-        assert False
+        raise AssertionError()
     except ValueError:
         pass
