@@ -4,8 +4,8 @@ from urllib.parse import urlparse
 def fetch_allowed(url, allowlist):
     try:
         parsed = urlparse(url)
-    except Exception:
-        raise ValueError("invalid url")
+    except Exception as err:
+        raise ValueError("invalid url") from err
     if parsed.scheme not in ("http", "https"):
         raise ValueError("invalid scheme")
     host = parsed.hostname
