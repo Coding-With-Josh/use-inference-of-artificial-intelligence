@@ -4,7 +4,8 @@ import csv
 from pathlib import Path
 
 
-def randomize(output: Path, seed: int = 42) -> None:
+def randomize(output: Path | str, seed: int = 42) -> None:
+    output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", newline="") as f:
         writer = csv.writer(f)
