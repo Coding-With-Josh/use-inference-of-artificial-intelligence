@@ -22,8 +22,6 @@ def run_in_sandbox(cmd: list[str], workdir: Path | None = None, timeout: int = 1
         "--read-only",
         "--tmpfs",
         "/tmp:rw,noexec,nosuid,size=128m",
-        "--tmpfs",
-        "/app/.pytest_cache:rw,noexec,nosuid,size=32m",
         f"--memory={mem_limit}",
         f"--cpus={cpu_limit}",
         "--user",
