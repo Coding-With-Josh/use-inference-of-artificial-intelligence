@@ -1,0 +1,6 @@
+id: t01
+title: merge overlapping date intervals
+category: functional
+difficulty: 2
+time_limit_s: 120
+expected_entrypoint: merge_intervals.py
