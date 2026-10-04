@@ -24,35 +24,25 @@ def validate() -> int:
         ref = tid / "reference"
         if ref.exists():
             cmd = [
-                "python",
-                "-m",
-                "pytest",
-                "../visible_tests",
-                "../hidden_tests",
-                "-p",
-                "no:cacheprovider",
-                "-q",
+                "sh",
+                "-c",
+                "PYTHONPATH=/app/reference python -m pytest /app/visible_tests /app/hidden_tests -p no:cacheprovider --override-ini=addopts= -q",
             ]
             try:
-                cp = _run_in_sandbox(tid / "reference", cmd)
-                if cp.returncode != 0 or "passed" not in cp.stdout:
-                    failures.append(tid.name)
+                cp = _run_in_sandbox(tid, cmd)
+                if cp.returncode != 0:
+                    failures.append(f"{tid.name}-ref")
             except Exception:
-                failures.append(tid.name)
+                failures.append(f"{tid.name}-ref")
         st = tid / "starter"
         if st.exists():
             cmd = [
-                "python",
-                "-m",
-                "pytest",
-                "../visible_tests",
-                "../hidden_tests",
-                "-p",
-                "no:cacheprovider",
-                "-q",
+                "sh",
+                "-c",
+                "PYTHONPATH=/app/starter python -m pytest /app/visible_tests /app/hidden_tests -p no:cacheprovider --override-ini=addopts= -q",
             ]
             try:
-                cp = _run_in_sandbox(tid / "starter", cmd)
+                cp = _run_in_sandbox(tid, cmd)
                 if cp.returncode == 0:
                     failures.append(f"{tid.name}-starter")
             except Exception:
