@@ -1,0 +1,6 @@
+id: t02
+title: slugify a string for urls
+category: functional
+difficulty: 1
+time_limit_s: 60
+expected_entrypoint: slugify.py
