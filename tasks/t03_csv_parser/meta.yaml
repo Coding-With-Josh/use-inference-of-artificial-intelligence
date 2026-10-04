@@ -1,0 +1,6 @@
+id: t03
+title: csv parser with quoted fields and bad rows
+category: functional
+difficulty: 2
+time_limit_s: 120
+expected_entrypoint: csv_parser.py
