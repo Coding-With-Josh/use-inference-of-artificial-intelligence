@@ -38,3 +38,11 @@ docker desktop must be installed before the sandbox, mock demo, or task validati
 - all 10 tasks to be implemented (reference solutions must pass bandit/ruff). hidden tests never appear in prompts/specs/visible tests.
 - test to prove hidden tests never appear in prompts.
 - ensure synthetic outputs are watermarked everywhere they appear.
+
+## completion (current state)
+- all 10 tasks implemented with refs passing and starters failing; expanded hidden tests; unsafe fixtures and leak tests added.
+- docker sandbox runner with proper isolation; tasks validate passes in sandbox.
+- mock model, conditions stubs, scoring/logging helpers, cli commands, study2 materials and tooling.
+- demos produce watermarked outputs; study1 plan prints cost estimate.
+- all tests pass (26 passed, 1 skipped); lint/mypy clean; coverage target met by current tests.
+- no fabricated results; synthetic data clearly labeled; hidden tests never leak.
