@@ -9,7 +9,7 @@ def is_docker_available() -> bool:
     return shutil.which("docker") is not None
 
 
-def run_in_sandbox(cmd: list[str], workdir: Path | None = None, timeout: int = 120, mem_limit: str = "512m", cpu_limit: str = "1.0") -> dict:
+def run_in_sandbox(cmd: list[str], workdir: Path | None = None, timeout: int = 180, mem_limit: str = "512m", cpu_limit: str = "1.0", image: str = "pilot-sandbox:latest") -> dict:
     if not is_docker_available():
         raise RuntimeError("docker is not available; no unsafe local mode is provided")
 
@@ -22,10 +22,6 @@ def run_in_sandbox(cmd: list[str], workdir: Path | None = None, timeout: int = 1
         "--read-only",
         "--tmpfs",
         "/tmp:rw,noexec,nosuid,size=128m",
-        "--tmpfs",
-        "/usr/local/lib/python3.11/site-packages:rw,exec,nosuid,size=128m",
-        "--tmpfs",
-        "/var/cache:rw,noexec,nosuid,size=16m",
         f"--memory={mem_limit}",
         f"--cpus={cpu_limit}",
         "--user",
@@ -37,7 +33,7 @@ def run_in_sandbox(cmd: list[str], workdir: Path | None = None, timeout: int = 1
     if workdir is not None:
         wd = Path(workdir).resolve()
         docker_cmd.extend(["-v", f"{wd}:/app:ro", "-w", "/app"])
-    docker_cmd.append("python:3.11-slim")
+    docker_cmd.append(image)
     docker_cmd.extend(cmd)
 
     try:
