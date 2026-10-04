@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,7 +9,7 @@ def is_docker_available() -> bool:
     return shutil.which("docker") is not None
 
 
-def run_in_sandbox(cmd: list[str], workdir: Path | None = None, timeout: int = 120, network: bool = False, mem_limit: str = "512m", cpu_limit: str = "1.0") -> dict:
+def run_in_sandbox(cmd: list[str], workdir: Path | None = None, timeout: int = 120, mem_limit: str = "512m", cpu_limit: str = "1.0") -> dict:
     if not is_docker_available():
         raise RuntimeError("docker is not available; no unsafe local mode is provided")
 
@@ -19,10 +18,14 @@ def run_in_sandbox(cmd: list[str], workdir: Path | None = None, timeout: int = 1
         "run",
         "--rm",
         "-i",
-        "--network=none" if not network else "--network=bridge",
+        "--network=none",
         "--read-only",
         "--tmpfs",
-        "/tmp:rw,noexec,nosuid,size=64m",
+        "/tmp:rw,noexec,nosuid,size=128m",
+        "--tmpfs",
+        "/usr/local/lib/python3.11/site-packages:rw,exec,nosuid,size=128m",
+        "--tmpfs",
+        "/var/cache:rw,noexec,nosuid,size=16m",
         f"--memory={mem_limit}",
         f"--cpus={cpu_limit}",
         "--user",
