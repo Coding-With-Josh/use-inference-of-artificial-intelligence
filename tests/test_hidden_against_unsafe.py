@@ -1,6 +1,5 @@
 import importlib.util
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -33,7 +32,6 @@ def test_unsafe_fails_hidden(task, func):
     # copy unsafe module into hidden_tests context by symlink-like: run pytest with hidden_tests and inject
     # run hidden tests with PYTHONPATH pointing to unsafe module dir? easier: copy unsafe as module name expected
     # most hidden tests import from task module name; we can run pytest on hidden_tests but set up path
-    import subprocess
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(unsafe.parent) + ":" + env.get("PYTHONPATH", "")

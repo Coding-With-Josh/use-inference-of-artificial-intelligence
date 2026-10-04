@@ -1,4 +1,3 @@
-import sqlite3
 
 
 def lookup_user(conn, username):

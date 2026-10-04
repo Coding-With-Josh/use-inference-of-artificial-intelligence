@@ -1,5 +1,3 @@
-from pathlib import Path
-import pytest
 from file_server import serve_file
 
 
