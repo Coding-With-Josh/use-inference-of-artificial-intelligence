@@ -11,49 +11,49 @@ from pilot.tasks import validate as tasks_validate
 app = typer.Typer()
 
 
-@app.command()
+@app.command("study1-plan")
 def study1_plan() -> None:
     result = runner.plan()
     typer.echo(f"trials={result['trials']} cost_estimate_usd={result['cost_estimate_usd']}")
 
 
-@app.command()
+@app.command("study1-run")
 def study1_run() -> None:
     runner.run()
 
 
-@app.command()
+@app.command("study1-analyze")
 def study1_analyze() -> None:
     runner.analyze()
 
 
-@app.command(name="tasks-validate")
+@app.command("tasks-validate")
 def tasks_validate_cmd() -> None:
     sys.exit(tasks_validate.validate())
 
 
-@app.command()
+@app.command("study2-randomize")
 def study2_randomize() -> None:
     from study2 import randomize
 
     randomize.randomize(Path("synthetic/randomization.csv"))
 
 
-@app.command()
+@app.command("study2-ingest")
 def study2_ingest() -> None:
     from study2 import ingest
 
     ingest.ingest(Path("synthetic/participants.csv"), Path("results/study2_ingested.csv"))
 
 
-@app.command()
+@app.command("study2-analyze")
 def study2_analyze() -> None:
     from study2 import analysis
 
     analysis.analyze(Path("results/study2_ingested.csv"), Path("results/study2"))
 
 
-@app.command()
+@app.command("demo")
 def demo() -> None:
     Path("results/demo").mkdir(parents=True, exist_ok=True)
     (Path("results/demo/report.md")).write_text("# demo report\n\nsynthetic data, pipeline test only\n")
