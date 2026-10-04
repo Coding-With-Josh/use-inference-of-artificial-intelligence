@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-
 FIXTURES = [
     ("t06_user_lookup", ["../hidden_tests/test_hidden.py"]),
     ("t07_file_serving", ["../hidden_tests/test_hidden.py"]),
