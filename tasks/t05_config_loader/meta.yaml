@@ -1,0 +1,6 @@
+id: t05
+title: json config loader with schema validation
+category: functional
+difficulty: 2
+time_limit_s: 120
+expected_entrypoint: config_loader.py
