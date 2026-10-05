@@ -7,11 +7,11 @@ named; nothing is asserted from memory.
 
 | command | result |
 |---|---|
-| `make test` | 421 passed, coverage 93.85% (gate 85%, unchanged) |
+| `make test` | 536 passed, coverage 93.06% (gate 85%, unchanged) |
 | `make tasks-validate` | 10 tasks, 20 sandbox runs, 120 hidden tests; every reference passed, every starter failed |
 | `make demo-mock` | 20 trials, **20 graded**, 206 hidden tests executed, 3 figures, watermarked report + manifest |
 | `uv run ruff check .` | All checks passed |
-| `uv run mypy src tests` | no issues in 64 source files |
+| `uv run mypy src tests` | no issues in 74 source files |
 
 ## built and tested
 
@@ -45,6 +45,17 @@ named; nothing is asserted from memory.
   to a JSONL file).
 - **runner** — plan / run / analyze, with a budget guard, `--dry-run`, and
   resume that skips trials already in the log.
+- **provider adapters** — `anthropic`, `openai` and `groq` behind the common
+  `Model` interface, selected by `PROVIDER` (default `groq`, which has a usable
+  free tier). Keys come from the environment only, wrapped in `RedactedSecret`,
+  and travel in the `Authorization` header — never a URL parameter, never a log
+  line. Adapters speak HTTP through an **injectable transport**, so the whole
+  suite runs offline and any unexpected outbound call is visible in a test.
+  `build_model` is an allow-list that raises on an unknown provider and never
+  falls back to the mock; a silent fallback would turn a real study into
+  synthetic data. `demo-mock` and `tests/conftest.py` each pin `PROVIDER=mock`
+  themselves, so an exported key cannot turn a watermarked pipeline test into a
+  billed API run.
 - **analysis** — paired t, Wilcoxon, bootstrap CI, Holm correction, mixed
   effects, figures, markdown report.
 - **cli** — `study1-plan`, `study1-run`, `study1-analyze`, `tasks-validate`,
@@ -111,6 +122,12 @@ These are the rules the code enforces, each with a test:
 
 - `TODO(joshua)` paper link in README, and the DOI/URL in `CITATION.cff`.
 - Ethics contact/approval placeholders in `study2/` consent and protocol.
-- Real API keys, a real model, and an actual study 1 run. Every number currently
-  in the repo comes from the mock model and is watermarked as such.
+- **A real study 1 run.** The adapters exist and are tested, but every real
+  outbound call is still untested against a live endpoint: no key has ever been
+  used here, so Groq's actual response envelope, its rate-limit behaviour and its
+  free-tier quotas are unverified. Every number currently in the repo still comes
+  from the mock model and is watermarked as such.
+- **`GEMINI_API_KEY` was removed from `.env.example`.** It was listed but no
+  Gemini adapter exists; listing a key for an unsupported provider invites
+  setting it and wondering why nothing changes.
 - Participants, ethics review, and any use of the results.

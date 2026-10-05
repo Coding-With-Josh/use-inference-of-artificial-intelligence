@@ -21,14 +21,50 @@ all numbers must come from code that actually ran. synthetic data lives only in 
 2. `make install`
 3. `make sandbox-image`  # build the pinned, non-root, no-network sandbox image
 4. copy `.env.example` to `.env` and fill only what you need (api keys are never logged).
+   `make test`, `make tasks-validate` and `make demo-mock` need **no** api key: they
+   pin the mock provider internally, so they stay offline even if your shell has
+   `PROVIDER` and a key exported.
 5. `make test`  # unit and integration tests, 85% coverage gate
 6. `make lint`  # ruff
 7. `make typecheck`  # mypy
 8. `make tasks-validate`  # every reference passes, every starter fails (needs docker)
 9. `make demo-mock`  # full pipeline with mock model (needs docker)
 10. `make study1-plan`  # dry run with cost estimate
-11. `make study1-run`  # run study 1 (needs api keys)
+11. `make study1-run`  # run study 1 (needs an api key for the chosen provider)
 12. `make study1-analyze`  # stats and report
+
+## providers
+
+`PROVIDER` selects the model backend. Keys come from the environment only —
+there is deliberately no command-line flag for a key, because argv is visible in
+`ps` output to every process on the machine.
+
+| `PROVIDER` | key | default model | notes |
+|---|---|---|---|
+| `groq` (default) | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | has a usable free tier; rate-limited |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5` | |
+| `openai` | `OPENAI_API_KEY` | `gpt-4.1` | |
+| `mock` | — | — | offline, deterministic, watermarked; used by every test |
+
+```bash
+PROVIDER=groq GROQ_API_KEY=... make study1-run
+PROVIDER=mock make demo-mock          # offline pipeline check
+MODEL_ID=llama-3.1-8b-instant make study1-plan   # override the model
+```
+
+Three things worth knowing:
+
+- **the default applies to study runs only.** `demo-mock` and the test suite pin
+  `PROVIDER=mock` themselves, because their contract is "offline and
+  watermarked". a key in your shell cannot turn them into a real billed run.
+- **a `*_BASE_URL` override redirects the key.** `study1-plan` and `study1-run`
+  print a warning when it points somewhere other than the provider's official
+  host. proxies are legitimate, so it warns rather than blocks — but a
+  credential silently going to a third party should never be invisible.
+- **no automatic retries.** the POST is not idempotent, so a retry after a
+  timeout can double-charge and yield two different completions for one trial. a
+  provider failure is recorded as an explicitly *ungraded* trial and the matrix
+  continues.
 
 ## cost and safety notes
 

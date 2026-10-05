@@ -28,8 +28,13 @@ from pilot.sandbox import docker_runner
 REPO_ROOT = Path(__file__).resolve().parent.parent
 UNSAFE_DIR = REPO_ROOT / "tests" / "fixtures" / "unsafe"
 
-# Security tasks per docs/tasks.md (items 6-10): task id -> entrypoint module.
-SECURITY_TASKS = {
+# Task id -> entrypoint module, for every task that ships an unsafe fixture.
+# t04/t05 are functional rather than injection-focused, but they have unsafe
+# fixtures on disk, so they are covered here too: a fixture nobody runs is a
+# fixture that silently stops being wrong.
+UNSAFE_FIXTURES = {
+    "t04_rate_limiter": "rate_limiter",
+    "t05_config_loader": "config_loader",
     "t06_user_lookup": "user_lookup",
     "t07_file_serving": "file_server",
     "t08_password_hash": "password",
@@ -86,11 +91,11 @@ def _stage(task_id: str, entrypoint: str, impl: Path, staging: Path) -> None:
         os.chmod(child, 0o644)
 
 
-@pytest.mark.parametrize("task_id", sorted(SECURITY_TASKS))
+@pytest.mark.parametrize("task_id", sorted(UNSAFE_FIXTURES))
 @requires_sandbox
 def test_unsafe_fixture_fails_hidden_tests(task_id: str, tmp_path: Path) -> None:
     """The unsafe implementation must fail, with tests genuinely executed."""
-    entrypoint = SECURITY_TASKS[task_id]
+    entrypoint = UNSAFE_FIXTURES[task_id]
     fixture = UNSAFE_DIR / f"{task_id}.py"
     assert fixture.exists(), f"missing unsafe fixture {fixture}"
 
@@ -119,7 +124,7 @@ def test_unsafe_fixture_fails_hidden_tests(task_id: str, tmp_path: Path) -> None
     )
 
 
-@pytest.mark.parametrize("task_id", sorted(SECURITY_TASKS))
+@pytest.mark.parametrize("task_id", sorted(UNSAFE_FIXTURES))
 @requires_sandbox
 def test_reference_passes_the_same_suite(task_id: str, tmp_path: Path) -> None:
     """Control: the identical harness run against the reference must pass.
@@ -127,7 +132,7 @@ def test_reference_passes_the_same_suite(task_id: str, tmp_path: Path) -> None:
     Without this, a suite that fails for every implementation (a typo, a bad
     import) would look like a working detector.
     """
-    entrypoint = SECURITY_TASKS[task_id]
+    entrypoint = UNSAFE_FIXTURES[task_id]
     reference = next((REPO_ROOT / "tasks" / task_id / "reference").glob("*.py"))
 
     staging = tmp_path / f"{task_id}_ref"
@@ -167,5 +172,14 @@ def test_parse_pytest_summary_counts_failures_and_nodes() -> None:
 
 
 def test_every_security_task_has_an_unsafe_fixture() -> None:
-    for task_id in SECURITY_TASKS:
+    for task_id in UNSAFE_FIXTURES:
         assert (UNSAFE_DIR / f"{task_id}.py").exists(), f"missing fixture for {task_id}"
+
+
+def test_no_unsafe_fixture_on_disk_is_left_untested() -> None:
+    """A fixture nobody runs is a fixture that silently stops being wrong."""
+    on_disk = {p.stem for p in UNSAFE_DIR.glob("*.py")}
+    assert on_disk == set(UNSAFE_FIXTURES), (
+        f"fixtures on disk but not exercised: {sorted(on_disk - set(UNSAFE_FIXTURES))}; "
+        f"exercised but not on disk: {sorted(set(UNSAFE_FIXTURES) - on_disk)}"
+    )

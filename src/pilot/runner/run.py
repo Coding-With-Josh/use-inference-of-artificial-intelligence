@@ -26,7 +26,10 @@ from pilot.conditions.cond_b import ConditionB
 from pilot.conditions.cond_c import ConditionC
 from pilot.config.config import Config, load_config
 from pilot.logging.logger import JsonlLogger
-from pilot.models.mock import MockModel
+from pilot.models.base import Model
+from pilot.models.http import ProviderError, redact
+from pilot.models.mock import MockModel  # noqa: F401  (kept for direct callers/tests)
+from pilot.models.registry import build_model, is_synthetic
 from pilot.prompts import load_task_context
 from pilot.scoring import hidden_tests, metrics
 
@@ -37,9 +40,9 @@ CONDITIONS = ("a", "b", "c")
 
 # Illustrative mock pricing, only used to produce a *plan* estimate. The mock
 # model costs nothing to serve; these figures exist so the budget guard has
-# something to check before a real provider is wired in.
-MOCK_PRICE_IN_PER_MTOK = 3.0
-MOCK_PRICE_OUT_PER_MTOK = 15.0
+# something to check before a real provider is wired in. Pricing per provider
+# now lives in `pilot.config.config.DEFAULT_PRICING` -- single source of truth,
+# so the budget guard is denominated in whatever the configured provider bills in.
 ESTIMATED_TOKENS_IN = 1200
 ESTIMATED_TOKENS_OUT = 800
 
@@ -53,6 +56,26 @@ def discover_task_ids(tasks_dir: Path | None = None) -> list[str]:
     return sorted(p.name for p in base.iterdir() if p.is_dir() and not p.name.startswith("_"))
 
 
+def parse_ablation(value: str | None) -> list[str]:
+    """Validate an --ablate argument against the three condition-C stages.
+
+    Raised here, before any spend, so a typo cannot quietly produce a full
+    condition-C run labelled as an ablation of something else.
+    """
+    from pilot.conditions.cond_c import ABLATIONS
+
+    names = [part.strip() for part in (value or "").split(",") if part.strip()]
+    unknown = sorted(set(names) - set(ABLATIONS))
+    if unknown:
+        raise ValueError(
+            f"unknown ablation(s) {', '.join(unknown)}; "
+            f"supported: {', '.join(ABLATIONS)}"
+        )
+    # Preserve ABLATIONS order so the recorded `ablated` list is comparable
+    # between runs regardless of the order they were typed in.
+    return [name for name in ABLATIONS if name in names]
+
+
 def plan(config: Config | None = None, tasks_dir: Path | None = None) -> dict[str, Any]:
     """Compute the trial plan. Pure: no model, no sandbox, no writes."""
     cfg = config or load_config()
@@ -61,7 +84,7 @@ def plan(config: Config | None = None, tasks_dir: Path | None = None) -> dict[st
     trials = n_tasks * len(CONDITIONS) * max(1, cfg.experiment.n_trials)
 
     per_trial = metrics.estimate_cost_usd(
-        ESTIMATED_TOKENS_IN, ESTIMATED_TOKENS_OUT, MOCK_PRICE_IN_PER_MTOK, MOCK_PRICE_OUT_PER_MTOK
+        ESTIMATED_TOKENS_IN, ESTIMATED_TOKENS_OUT, *cfg.model.pricing()
     )
     estimate = per_trial * trials
     return {
@@ -73,7 +96,8 @@ def plan(config: Config | None = None, tasks_dir: Path | None = None) -> dict[st
         "cost_estimate_usd": round(estimate, 4),
         "max_cost_usd": cfg.experiment.max_cost_usd,
         "within_budget": estimate <= cfg.experiment.max_cost_usd,
-        "synthetic": cfg.model.provider == "mock",
+        "provider": cfg.model.provider,
+        "synthetic": is_synthetic(cfg),
     }
 
 
@@ -147,11 +171,34 @@ def run(
     log_path = log_dir / "trials.jsonl"
     done = _completed_keys(log_path) if resume else set()
 
-    model = MockModel(seed=cfg.model.seed or 42)
+    # Provenance is derived, never asserted. This used to be hardcoded, so a real
+    # provider run and a mock run were indistinguishable in the artefacts.
+    synthetic = is_synthetic(cfg)
+    price_in, price_out = cfg.model.pricing()
+
+    # A missing credential is not a per-trial failure: nothing can be generated at
+    # all, so fail closed and refuse before any spend or any trial record.
+    model = build_model(cfg)
+    if not synthetic and isinstance(model, Model):
+        secret_obj = getattr(model, "_key", None)
+        if secret_obj is not None and not secret_obj:
+            raise ProviderError(
+                f"provider {cfg.model.provider!r} selected but no API key found. "
+                "Keys are read from the environment only -- never from a command-line "
+                "flag, which is visible in `ps` output."
+            )
+    else:
+        secret_obj = None
+    # The one secret this process holds, unwrapped once so that provider-derived
+    # text reaching the trial log can be scrubbed. None on the mock path, where
+    # `redact` is a no-op.
+    secret = secret_obj.reveal() if secret_obj is not None else None
+
     logger = JsonlLogger(run_id, base)
 
     executed = 0
     skipped = 0
+    failed = 0
     spent = 0.0
 
     for task_id in planned["task_ids"]:
@@ -167,8 +214,8 @@ def run(
             trial_cost = metrics.estimate_cost_usd(
                 ESTIMATED_TOKENS_IN,
                 ESTIMATED_TOKENS_OUT,
-                MOCK_PRICE_IN_PER_MTOK,
-                MOCK_PRICE_OUT_PER_MTOK,
+                price_in,
+                price_out,
             )
             if spent + trial_cost > cfg.experiment.max_cost_usd:
                 raise BudgetExceeded(
@@ -189,7 +236,31 @@ def run(
             workspace = _stage_workspace(run_id, task_path, condition)
             ctx = load_task_context(task_path)
             trial = _build_condition(condition, model, workspace, cfg.experiment.ablation)
-            result = trial.run(ctx)
+
+            # A provider outage or a malformed response must not destroy the other
+            # 599 trials. Record the trial as explicitly ungraded and continue:
+            # analyze() counts ungraded trials separately and never folds them
+            # into a measured zero. Recording nothing would lose the resume point
+            # and re-run the trial; recording a score would fabricate a result.
+            try:
+                result = trial.run(ctx)
+            except Exception as exc:  # noqa: BLE001 - deliberate boundary
+                failed += 1
+                logger.log_trial(
+                    {
+                        "task_id": task_id,
+                        "condition": condition,
+                        "iterations": 0,
+                        "guardrail_rounds": 0,
+                        "ablated": [],
+                        "rejected_writes": [],
+                        **UNGRADED_METRICS,
+                        "grade_exit_class": "not_graded",
+                        "ungraded_reason": f"{type(exc).__name__}: {redact(str(exc), secret)}",
+                        "synthetic": synthetic,
+                    }
+                )
+                continue
 
             logger.log_trial(
                 {
@@ -200,7 +271,7 @@ def run(
                     "ablated": result.ablated,
                     "rejected_writes": result.rejected_writes,
                     **grade_trial(task_path, workspace, result.final_code, timeout=timeout),
-                    "synthetic": True,
+                    "synthetic": synthetic,
                 }
             )
             executed += 1
@@ -210,11 +281,13 @@ def run(
         "run_id": run_id,
         "executed": executed,
         "skipped": skipped,
+        "failed": failed,
         "planned": planned["trials"],
         "spent_usd": round(spent, 4),
         "max_cost_usd": cfg.experiment.max_cost_usd,
+        "provider": cfg.model.provider,
         "dry_run": dry_run,
-        "synthetic": True,
+        "synthetic": synthetic,
         "log": str(log_path),
     }
 

@@ -292,3 +292,91 @@ def test_calibration_metrics_mismatched_lengths():
 def test_metrics_calibration_error_bounds():
     value = metrics.calibration_error([0.5, 0.5], [0, 1], bins=2)
     assert 0.0 <= value <= 1.0
+
+
+def test_paired_effect_size_scales_with_the_difference():
+    """dz must respond to the data, not return a constant."""
+    import numpy as np
+
+    from pilot.analysis.stats import paired_effect_size
+
+    rng = np.random.default_rng(3)
+    base = rng.normal(0.2, 0.1, 10)
+    # Jittered, not constant: a constant offset has zero variance in the paired
+    # differences, which is deliberately reported as undefined (see below).
+    small = paired_effect_size(base, base - rng.normal(0.01, 0.004, 10))
+    large = paired_effect_size(base, base - rng.normal(0.20, 0.004, 10))
+    assert small["interpretable"] is True and large["interpretable"] is True
+    assert abs(large["cohens_dz"]) > abs(small["cohens_dz"])
+    assert abs(large["hedges_g"]) > abs(small["hedges_g"])
+
+
+def test_paired_effect_size_is_undefined_for_constant_differences():
+    """0.3 stored ten times is not bit-identical, so sd is ~1e-17, not 0.0.
+
+    Dividing by it yields a dz around 1e15, which would print as an enormous
+    measured effect. This pins the tolerance guard.
+    """
+    import numpy as np
+
+    from pilot.analysis.stats import paired_effect_size
+
+    for a_value, b_value in ((0.5, 0.2), (1.0, 0.0), (0.1, 0.1)):
+        result = paired_effect_size(
+            np.full(10, a_value), np.full(10, b_value)
+        )
+        assert result["interpretable"] is False
+        assert result["cohens_dz"] is None
+        assert result["hedges_g"] is None
+
+
+def test_paired_effect_size_handles_no_paired_data():
+    from pilot.analysis.stats import paired_effect_size
+
+    empty = paired_effect_size([], [])
+    assert empty["cohens_dz"] is None
+    assert empty["n"] == 0
+
+    single = paired_effect_size([0.3], [0.1])
+    assert single["cohens_dz"] is None
+
+
+def test_report_never_prints_inf_or_nan_for_the_effect_size():
+    """A degenerate effect must be stated as undefined, not as 1e15."""
+    import numpy as np
+
+    from pilot.analysis.report import _effect_size_lines
+    from pilot.analysis.stats import paired_effect_size
+
+    line = _effect_size_lines(paired_effect_size(np.full(10, 0.5), np.full(10, 0.2)))[0]
+    assert "not defined" in line
+    for token in ("inf", "nan", "e+", "E+"):
+        assert token not in line
+
+
+def test_report_prints_both_cohens_and_hedges():
+    import numpy as np
+
+    from pilot.analysis.report import _effect_size_lines
+    from pilot.analysis.stats import paired_effect_size
+
+    rng = np.random.default_rng(5)
+    base = rng.normal(0.2, 0.1, 12)
+    shifted = base - rng.normal(0.05, 0.05, 12)
+    line = _effect_size_lines(paired_effect_size(base, shifted))[0]
+    assert "dz=" in line and "g=" in line
+
+
+def test_contrast_battery_includes_the_effect_size():
+    import numpy as np
+
+    from pilot.analysis.stats import analyze_condition_contrast
+
+    rng = np.random.default_rng(9)
+    b = rng.normal(0.1, 0.05, 10)
+    c = b + rng.normal(0.05, 0.02, 10)
+    battery = analyze_condition_contrast(c, b)
+    assert "effect_size" in battery
+    assert battery["effect_size"]["interpretable"] is True
+    for key in ("paired_t", "wilcoxon", "effect", "holm"):
+        assert key in battery

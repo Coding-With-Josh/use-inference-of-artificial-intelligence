@@ -48,8 +48,13 @@ _EXPRESSIONS = {
 class MockModel(Model):
     """A seeded, offline model that returns importable, inert code."""
 
+    provider = "mock"
+
     def __init__(self, seed: int = 42) -> None:
         self.seed = seed
+
+    def describe(self) -> dict[str, Any]:
+        return {"provider": self.provider, "model_id": "mock", "seed": self.seed}
 
     def label(self, prompt: str) -> str:
         """The outcome this prompt deterministically maps to."""

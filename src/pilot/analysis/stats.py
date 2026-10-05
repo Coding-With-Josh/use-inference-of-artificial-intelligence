@@ -194,6 +194,64 @@ def paired_effect_ci(
     }
 
 
+def paired_effect_size(
+    condition_a: Sequence[float],
+    condition_b: Sequence[float],
+) -> dict[str, Any]:
+    """Standardized paired effect size: Cohen's dz and Hedges' g_av.
+
+    dz is the mean paired difference over the SD of those differences -- the
+    right standardization for within-subject designs, where the variance of the
+    raw scores is not the error term.
+
+    Hedges' correction is applied because with the small n this study runs (10
+    tasks, and fewer graded trials when a provider fails), g is biased upward
+    and dz alone overstates the effect.
+
+    Returns `interpretable: False` when every difference is identical, because
+    dz divides by an SD of zero there and the resulting infinity would be
+    reported as a real effect size.
+    """
+    a, b, note = _clean(condition_a, condition_b)
+    diffs = a - b
+    n = int(diffs.size)
+    if n == 0:
+        return {
+            "cohens_dz": None,
+            "hedges_g": None,
+            "sd_diff": None,
+            "n": 0,
+            "interpretable": False,
+            "note": note or "no paired data",
+        }
+    sd = float(np.std(diffs, ddof=1)) if n > 1 else 0.0
+    mean = float(np.mean(diffs))
+    # `sd == 0.0` is not sufficient: 0.3 stored ten times and averaged back is
+    # not bit-identical, so a genuinely constant difference yields sd ~1e-17 and
+    # a dz in the 1e15 range -- which would print as an enormous "effect".
+    # Compare against a tolerance scaled to the magnitude of the data.
+    if sd <= max(abs(mean), 1.0) * 1e-12:
+        return {
+            "cohens_dz": None,
+            "hedges_g": None,
+            "sd_diff": sd,
+            "n": n,
+            "interpretable": False,
+            "note": "paired differences have no variance; effect size undefined",
+        }
+    dz = mean / sd
+    # Hedges' small-sample correction, J = 1 - 3/(4(n-1) - 1).
+    j = 1.0 - 3.0 / (4.0 * (n - 1) - 1.0) if n > 1 else 1.0
+    return {
+        "cohens_dz": float(dz),
+        "hedges_g": float(dz * j),
+        "sd_diff": sd,
+        "n": n,
+        "interpretable": True,
+        "note": note,
+    }
+
+
 def holm_correction(p_values: Sequence[float], alpha: float = 0.05) -> dict[str, Any]:
     """Holm-Bonferroni step-down correction for multiple comparisons.
 
@@ -291,16 +349,19 @@ def analyze_condition_contrast(
     """Run the full comparison battery for one contrast.
 
     Combines the paired t-test, the Wilcoxon test, the bootstrap CI for the
-    paired difference, and a Holm-corrected verdict across the family of tests.
+    paired difference, the standardized paired effect size, and a Holm-corrected
+    verdict across the family of tests.
     """
     t_result = paired_t_test(a_values, b_values, alpha=alpha)
     w_result = wilcoxon_test(a_values, b_values, alpha=alpha)
     effect = paired_effect_ci(a_values, b_values)
+    effect_size = paired_effect_size(a_values, b_values)
     correction = holm_correction([t_result.p_value, w_result.p_value], alpha=alpha)
     return {
         "paired_t": t_result.as_dict(),
         "wilcoxon": w_result.as_dict(),
         "effect": effect,
+        "effect_size": effect_size,
         "holm": correction,
         "summary": metrics.summarize([float(v) for v in a_values]),
         "summary_b": metrics.summarize([float(v) for v in b_values]),

@@ -5,6 +5,8 @@ from pathlib import Path
 
 import typer
 
+from pilot.models.http import ProviderError
+from pilot.models.registry import resolve, warn_if_unusual_base_url
 from pilot.runner import run as runner
 from pilot.tasks import validate as tasks_validate
 
@@ -15,8 +17,28 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 @app.command("study1-plan")
 def study1_plan() -> None:
-    """Print the trial plan and cost estimate. Spends nothing."""
-    result = runner.plan()
+    """Print the trial plan and cost estimate. Spends nothing.
+
+    Also resolves the configured provider, so an unsupported or misspelled
+    PROVIDER is reported here -- before any run -- instead of at the first paid
+    API call. Without this, a typo looked like a valid plan.
+    """
+    try:
+        result = runner.plan()
+        # Resolution is pure: it imports the adapter and reads config, it does
+        # not construct a client or open a connection.
+        resolve(result["provider"])
+    except ValueError as exc:
+        typer.echo(f"configuration error: {exc}", err=True)
+        raise typer.Exit(code=4) from exc
+
+    # A *_BASE_URL override redirects the API key to another host. That is a
+    # legitimate proxy setting, so it is surfaced rather than blocked -- but it
+    # must never be invisible.
+    warning_text = warn_if_unusual_base_url()
+    if warning_text:
+        typer.echo(f"warning: {warning_text}", err=True)
+
     typer.echo(
         f"trials={result['trials']} tasks={result['tasks']} "
         f"cost_estimate_usd={result['cost_estimate_usd']} "
@@ -29,13 +51,40 @@ def study1_run(
     run_id: str = typer.Option("study1", help="Run identifier."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Plan without calling a model."),
     no_resume: bool = typer.Option(False, "--no-resume", help="Ignore existing trial log."),
+    ablate: str = typer.Option(
+        "",
+        "--ablate",
+        help="Comma-separated condition-C ablations: context,decomposition,guardrails.",
+    ),
 ) -> None:
     """Execute the study-1 trial matrix."""
+    # Parsed and validated before any spend: an unknown ablation name must not
+    # be discovered only after the trials it was meant to disable have run.
     try:
-        summary = runner.run(run_id=run_id, dry_run=dry_run, resume=not no_resume)
+        ablations = runner.parse_ablation(ablate)
+    except ValueError as exc:
+        typer.echo(f"configuration error: {exc}", err=True)
+        raise typer.Exit(code=4) from exc
+
+    # Loaded through `runner.load_config`, not a direct import, so a caller that
+    # patches the runner's config source still controls this command.
+    cfg = runner.load_config()
+    cfg.experiment.ablation = ",".join(ablations) or None
+
+    warning_text = warn_if_unusual_base_url(cfg)
+    if warning_text:
+        typer.echo(f"warning: {warning_text}", err=True)
+
+    try:
+        summary = runner.run(cfg, run_id=run_id, dry_run=dry_run, resume=not no_resume)
     except runner.BudgetExceeded as exc:
         typer.echo(f"budget guard: {exc}", err=True)
         raise typer.Exit(code=3) from exc
+    except ProviderError as exc:
+        # Misconfiguration must be one actionable line, not a Rich traceback.
+        # The message is already redacted by `pilot.models.http`.
+        typer.echo(f"provider error: {exc}", err=True)
+        raise typer.Exit(code=4) from exc
     typer.echo(
         f"run_id={summary['run_id']} executed={summary['executed']} "
         f"skipped={summary['skipped']} spent_usd={summary['spent_usd']} "
@@ -71,10 +120,20 @@ def tasks_validate_cmd(
 
 
 @app.command("demo-mock")
-def demo_mock() -> None:
+def demo_mock(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Exercise control flow without calling a model or grading."
+    ),
+) -> None:
     """End-to-end pipeline on the mock model, producing a watermarked report.
 
     Writes under results/demo-mock/ only. Never contacts a real provider.
+
+    The provider is pinned to the mock rather than inherited from the
+    environment. This command's contract is that it is offline and synthetic,
+    so a `PROVIDER` set in the operator's shell must not be able to turn a
+    watermarked pipeline test into a real, billed API run -- nor let the
+    `synthetic: true` below describe data that came from a live model.
     """
     from pilot.analysis import report as report_mod
     from pilot.scoring import metrics
@@ -83,11 +142,17 @@ def demo_mock() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     run_id = "demo-mock"
-    summary = runner.run(run_id=run_id, conditions=("b", "c"))
+    cfg = runner.load_config()
+    cfg.model.provider = "mock"
+    cfg.model.id = "mock"
+    summary = runner.run(cfg, run_id=run_id, conditions=("b", "c"), dry_run=dry_run)
     analysis = runner.analyze(run_id=run_id, output_dir=out_dir)
 
     manifest = {
-        "synthetic": True,
+        # Derived from the run that actually happened, not asserted. If the pin
+        # above were ever removed, this would report False rather than lying.
+        "synthetic": summary["synthetic"],
+        "provider": summary["provider"],
         "watermark": report_mod.WATERMARK,
         "run": summary,
         "n_trials": analysis["n_trials"],

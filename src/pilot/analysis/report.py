@@ -19,6 +19,27 @@ def _fmt(value: float, places: int = 3) -> str:
     return f"{value:.{places}f}"
 
 
+def _effect_size_lines(effect_size: dict[str, Any]) -> list[str]:
+    """Report the standardized effect size, or say why it is undefined.
+
+    Printing `inf` or `nan` here would present a division-by-zero artefact of
+    degenerate data as though it were a measured effect, so an uninterpretable
+    result is stated as such.
+    """
+    if not effect_size:
+        return []
+    if not effect_size.get("interpretable", False):
+        return [
+            f"- effect size: not defined "
+            f"({effect_size.get('note', 'insufficient paired data')})"
+        ]
+    return [
+        f"- effect size: Cohen's dz={_fmt(effect_size['cohens_dz'])}, "
+        f"Hedges' g={_fmt(effect_size['hedges_g'])} "
+        f"(sd of paired differences={_fmt(effect_size['sd_diff'])})"
+    ]
+
+
 def render_report(analysis: dict[str, Any], figures: list[Path] | None = None) -> str:
     """Render the study-1 report body."""
     synthetic = bool(analysis.get("synthetic", True))
@@ -123,6 +144,7 @@ def render_report(analysis: dict[str, Any], figures: list[Path] | None = None) -
                 f"p={_fmt(w.get('p_value', 1.0))}",
                 f"- mean difference: {_fmt(effect.get('mean_diff', 0.0))} "
                 f"(95% CI {_fmt(effect.get('ci_low', 0.0))} to {_fmt(effect.get('ci_high', 0.0))})",
+                *_effect_size_lines(result.get("effect_size", {})),
                 f"- holm-adjusted p (family of {holm.get('m', 0)}): "
                 f"{[_fmt(p) for p in holm.get('adjusted', [])]}",
                 f"- reject at alpha={holm.get('alpha', 0.05)}: {holm.get('reject', [])}",
