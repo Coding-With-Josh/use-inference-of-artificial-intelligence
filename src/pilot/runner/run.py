@@ -38,6 +38,14 @@ TASKS_DIR = REPO_ROOT / "tasks"
 
 CONDITIONS = ("a", "b", "c")
 
+#: Attrition spread, in percentage points of ungraded trials, above which the
+#: conditions are measuring different subsets badly enough to say so loudly.
+#: 5 points is the threshold from the reporting guidance for differential
+#: attrition: beyond it the contrast is confounded with what was lost, not merely
+#: noisier. Configurable because it is a judgement call, but a constant so the
+#: report and the test agree on one number.
+ATTRITION_IMBALANCE_POINTS = 5.0
+
 # Illustrative mock pricing, only used to produce a *plan* estimate. The mock
 # model costs nothing to serve; these figures exist so the budget guard has
 # something to check before a real provider is wired in. Pricing per provider
@@ -52,7 +60,15 @@ class BudgetExceeded(RuntimeError):
 
 
 def discover_task_ids(tasks_dir: Path | None = None) -> list[str]:
+    """Task directory names in the corpus.
+
+    A missing directory yields an empty list rather than raising: `plan()` is a
+    pure query and is used for previews, so pointing it at a path that is not there
+    yet should report zero trials, not a traceback.
+    """
     base = Path(tasks_dir or TASKS_DIR)
+    if not base.is_dir():
+        return []
     return sorted(p.name for p in base.iterdir() if p.is_dir() and not p.name.startswith("_"))
 
 
@@ -76,12 +92,81 @@ def parse_ablation(value: str | None) -> list[str]:
     return [name for name in ABLATIONS if name in names]
 
 
-def plan(config: Config | None = None, tasks_dir: Path | None = None) -> dict[str, Any]:
+def _resolve_task_id(token: str, known: list[str]) -> str:
+    """Resolve one `--tasks` token to a corpus directory name.
+
+    Accepts the full id or any unambiguous prefix, so `--tasks t01,t07` works
+    without the operator copying long names like `t07_file_serving`.
+
+    A prefix matching more than one task is an error rather than a guess: the
+    alternative is collecting trials for the wrong task and reporting the run as
+    complete.
+    """
+    if token in known:
+        return token
+    matches = [t for t in known if t.startswith(token)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(
+            f"task id {token!r} is ambiguous: it matches {', '.join(matches)}; "
+            "use more of the id"
+        )
+    raise ValueError(
+        f"unknown task id {token!r}; available: {', '.join(known)}"
+    )
+
+
+def parse_task_filter(value: str | None, tasks_dir: Path | None = None) -> tuple[str, ...]:
+    """Validate `--tasks` against the corpus before any spend.
+
+    A typo'd task id must be a configuration error here, not a run that silently
+    collects fewer trials than the operator asked for and reports it as complete.
+    """
+    requested = [part.strip() for part in (value or "").split(",") if part.strip()]
+    if not requested:
+        return ()
+    known = discover_task_ids(tasks_dir)
+    resolved: list[str] = []
+    for token in requested:
+        task_id = _resolve_task_id(token, known)
+        if task_id not in resolved:
+            resolved.append(task_id)
+    # Corpus order rather than the order typed, so two invocations naming the same
+    # tasks produce the same plan and therefore the same run order.
+    return tuple(t for t in known if t in set(resolved))
+
+
+def parse_conditions(value: str | None) -> tuple[str, ...]:
+    """Validate `--conditions` against the three defined conditions."""
+    requested = [part.strip() for part in (value or "").split(",") if part.strip()]
+    if not requested:
+        return ()
+    unknown = [c for c in requested if c not in CONDITIONS]
+    if unknown:
+        raise ValueError(
+            f"unknown condition(s) {', '.join(sorted(set(unknown)))}; "
+            f"supported: {', '.join(CONDITIONS)}"
+        )
+    # Normalise to CONDITIONS order so the run order is fixed by the design.
+    return tuple(c for c in CONDITIONS if c in set(requested))
+
+
+def plan(
+    config: Config | None = None,
+    tasks_dir: Path | None = None,
+    conditions: tuple[str, ...] = CONDITIONS,
+    task_filter: tuple[str, ...] = (),
+) -> dict[str, Any]:
     """Compute the trial plan. Pure: no model, no sandbox, no writes."""
     cfg = config or load_config()
     task_ids = discover_task_ids(tasks_dir)
+    if task_filter:
+        task_ids = [t for t in task_ids if t in set(task_filter)]
+    conditions = tuple(c for c in CONDITIONS if c in set(conditions)) or CONDITIONS
     n_tasks = len(task_ids)
-    trials = n_tasks * len(CONDITIONS) * max(1, cfg.experiment.n_trials)
+    replicates = max(1, cfg.experiment.n_trials)
+    trials = n_tasks * len(conditions) * replicates
 
     per_trial = metrics.estimate_cost_usd(
         ESTIMATED_TOKENS_IN, ESTIMATED_TOKENS_OUT, *cfg.model.pricing()
@@ -90,8 +175,8 @@ def plan(config: Config | None = None, tasks_dir: Path | None = None) -> dict[st
     return {
         "tasks": n_tasks,
         "task_ids": task_ids,
-        "conditions": list(CONDITIONS),
-        "trials_per_task": cfg.experiment.n_trials,
+        "conditions": list(conditions),
+        "trials_per_task": replicates,
         "trials": trials,
         "cost_estimate_usd": round(estimate, 4),
         "max_cost_usd": cfg.experiment.max_cost_usd,
@@ -101,31 +186,100 @@ def plan(config: Config | None = None, tasks_dir: Path | None = None) -> dict[st
     }
 
 
-@dataclass
+@dataclass(frozen=True)
 class TrialKey:
+    """One cell of the design matrix: a task, a condition, and a replicate index.
+
+    `trial_index` is part of the identity, not a detail. Without it, replicates of
+    the same (task, condition) collide: resume would consider the second replicate
+    already done, and the paired contrast would keep only the last replicate per
+    task. Both are silent data loss.
+    """
+
     task_id: str
     condition: str
+    trial_index: int = 0
 
-    def as_tuple(self) -> tuple[str, str]:
-        return (self.task_id, self.condition)
+    def as_tuple(self) -> tuple[str, str, int]:
+        return (self.task_id, self.condition, self.trial_index)
+
+    def as_label(self) -> str:
+        suffix = "" if self.trial_index == 0 else f"#{self.trial_index}"
+        return f"{self.condition}/{self.task_id}{suffix}"
 
 
-def _completed_keys(log_path: Path) -> set[tuple[str, str]]:
-    """Trial keys already recorded. A malformed trailing line is ignored rather
-    than aborting the resume -- a crash mid-write is expected, not exceptional."""
-    keys: set[tuple[str, str]] = set()
+def _completed_keys(log_path: Path) -> set[tuple[str, str, int]]:
+    """Trial keys whose work is genuinely finished, i.e. that were *graded*.
+
+    An ungraded trial -- a rate limit, a provider outage, a suite that never ran --
+    is deliberately excluded, so resume retries it. Only a measured trial counts as
+    done.
+
+    A malformed trailing line is ignored rather than aborting the resume: a crash
+    mid-write is expected, not exceptional.
+    """
+    keys: set[tuple[str, str, int]] = set()
     if not log_path.exists():
         return keys
+    for record in read_trial_records(log_path):
+        # `graded` absent means this log predates the field; a record that says
+        # nothing about grading is treated as done rather than re-run forever.
+        if record.get("graded", True) is False:
+            continue
+        keys.add(_key_of(record).as_tuple())
+    return keys
+
+
+def _key_of(record: dict[str, Any]) -> TrialKey:
+    return TrialKey(
+        task_id=str(record.get("task_id", "")),
+        condition=str(record.get("condition", "")),
+        trial_index=int(record.get("trial_index", 0) or 0),
+    )
+
+
+def read_trial_records(log_path: Path) -> list[dict[str, Any]]:
+    """Parse a trial log, skipping unreadable lines."""
+    if not log_path.exists():
+        return []
+    records: list[dict[str, Any]] = []
     for line in log_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            record = json.loads(line)
+            parsed = json.loads(line)
         except json.JSONDecodeError:
             continue
-        keys.add((record.get("task_id", ""), record.get("condition", "")))
-    return keys
+        if isinstance(parsed, dict):
+            records.append(parsed)
+    return records
+
+
+def _work_order(
+    plan_result: dict[str, Any],
+    conditions: tuple[str, ...],
+    replicates: int,
+    done: set[tuple[str, str, int]],
+) -> list[TrialKey]:
+    """Every cell to run, ungraded-and-retryable ones first.
+
+    A trial that failed for a transient reason (a rate limit, a provider blip) is
+    the most valuable one to re-run: it is the cheapest missing measurement to
+    recover. Graded trials are skipped entirely. Ordering is otherwise the design
+    order, so a fresh run is reproducible.
+
+    The result is what makes the dry run honest: it is the same list that the
+    non-dry run iterates, so `--dry-run` cannot describe a different run.
+    """
+    order: list[TrialKey] = []
+    for task_id in plan_result["task_ids"]:
+        for condition in conditions:
+            for index in range(replicates):
+                key = TrialKey(task_id, condition, index)
+                if key.as_tuple() not in done:
+                    order.append(key)
+    return order
 
 
 def _build_condition(name: str, model: Any, workdir: Path | None, ablation: str | None):
@@ -139,6 +293,32 @@ def _build_condition(name: str, model: Any, workdir: Path | None, ablation: str 
     raise ValueError(f"unknown condition {name!r}; expected one of {CONDITIONS}")
 
 
+#: Ungraded reasons that are worth re-running immediately on resume: the
+#: measurement is missing because of a transient condition, not because the trial
+#: was bad. A grade that failed because the suite never ran is in this class too.
+RETRYABLE_UNGRADED_REASONS = ("rate_limited", "provider_error", "unreachable")
+
+
+def _retry_first(log_path: Path) -> list[TrialKey]:
+    """Keys from previous runs that failed transiently and should be retried.
+
+    Ordered before everything else so a resume spends its budget recovering the
+    measurements that are missing rather than collecting new ones.
+    """
+    if not log_path.exists():
+        return []
+    retriable: list[TrialKey] = []
+    for record in read_trial_records(log_path):
+        if record.get("graded", True) is not False:
+            continue
+        reason = str(record.get("ungraded_reason_code", ""))
+        if reason in RETRYABLE_UNGRADED_REASONS:
+            key = _key_of(record)
+            if key not in retriable:
+                retriable.append(key)
+    return retriable
+
+
 def run(
     config: Config | None = None,
     run_id: str = "study1",
@@ -147,19 +327,21 @@ def run(
     dry_run: bool = False,
     resume: bool = True,
     timeout: int | None = None,
+    task_filter: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Execute the study-1 trial matrix.
 
-    Returns a summary dict. In dry_run mode nothing is executed and no model is
-    called; the planned trial list is still returned so the control flow is
-    exercised.
+    Returns a summary dict. In dry_run mode nothing is executed, no model is
+    called and no log is written; the exact list of trials that *would* run is
+    returned instead, so the dry run describes the real run rather than a
+    plausible-looking substitute.
 
     Every trial that produces code is graded against the task's hidden suite in
     the sandbox. `timeout` bounds each sandbox run (grading and guardrails).
     """
     cfg = config or load_config()
     timeout = timeout or max(cfg.sandbox.timeout_s, 120)
-    planned = plan(cfg, tasks_dir)
+    planned = plan(cfg, tasks_dir, conditions=conditions, task_filter=task_filter)
     if not planned["within_budget"]:
         raise BudgetExceeded(
             f"plan costs ${planned['cost_estimate_usd']:.4f}, "
@@ -170,6 +352,37 @@ def run(
     log_dir = base / "results" / run_id
     log_path = log_dir / "trials.jsonl"
     done = _completed_keys(log_path) if resume else set()
+    replicates = max(1, cfg.experiment.n_trials)
+
+    # Cells to run, retryable failures first. Computed before the credential check
+    # so the dry run works with no key set at all.
+    order = _work_order(planned, tuple(planned["conditions"]), replicates, done)
+    retried_first = _retry_first(log_path) if (resume and not dry_run) else []
+    if retried_first:
+        still_pending = {k.as_tuple() for k in order}
+        lead_in = [k for k in retried_first if k.as_tuple() in still_pending]
+        order = lead_in + [k for k in order if k.as_tuple() not in {x.as_tuple() for x in lead_in}]
+
+    if dry_run:
+        return {
+            "run_id": run_id,
+            "dry_run": True,
+            "executed": 0,
+            "skipped": len(done),
+            "failed": 0,
+            "ungraded": 0,
+            "retried_first": 0,
+            "planned_trials": len(order),
+            "planned_order": [k.as_label() for k in order],
+            "planned": planned["trials"],
+            "cost_estimate_usd": planned["cost_estimate_usd"],
+            "within_budget": planned["within_budget"],
+            "max_cost_usd": cfg.experiment.max_cost_usd,
+            "provider": planned["provider"],
+            "spent_usd": 0.0,
+            "synthetic": planned["synthetic"],
+            "log": str(log_path),
+        }
 
     # Provenance is derived, never asserted. This used to be hardcoded, so a real
     # provider run and a mock run were indistinguishable in the artefacts.
@@ -178,6 +391,8 @@ def run(
 
     # A missing credential is not a per-trial failure: nothing can be generated at
     # all, so fail closed and refuse before any spend or any trial record.
+    # Construction refuses a non-official base URL here, before any trial and at
+    # zero cost, unless the operator passed --allow-custom-base-url.
     model = build_model(cfg)
     if not synthetic and isinstance(model, Model):
         secret_obj = getattr(model, "_key", None)
@@ -197,98 +412,136 @@ def run(
     logger = JsonlLogger(run_id, base)
 
     executed = 0
-    skipped = 0
+    skipped = len(done)
     failed = 0
+    ungraded = 0
     spent = 0.0
 
-    for task_id in planned["task_ids"]:
+    # Provenance is snapshotted per trial, not once per run: `returned_model_id`
+    # only exists after a call has happened, and condition C makes several. Reset
+    # before each trial so a trial's record describes that trial, not every
+    # earlier one in the run.
+    for key in order:
+        task_id, condition, trial_index = key.as_tuple()
         task_path = Path(tasks_dir or TASKS_DIR) / task_id
-        for condition in conditions:
-            key = (task_id, condition)
-            if resume and key in done:
-                skipped += 1
-                continue
 
-            # Budget guard re-checked per trial: the plan estimate can be wrong
-            # if real token usage differs, and the cap must hold at spend time.
-            trial_cost = metrics.estimate_cost_usd(
-                ESTIMATED_TOKENS_IN,
-                ESTIMATED_TOKENS_OUT,
-                price_in,
-                price_out,
+        # Budget guard re-checked per trial: the plan estimate can be wrong
+        # if real token usage differs, and the cap must hold at spend time.
+        trial_cost = metrics.estimate_cost_usd(
+            ESTIMATED_TOKENS_IN,
+            ESTIMATED_TOKENS_OUT,
+            price_in,
+            price_out,
+        )
+        if spent + trial_cost > cfg.experiment.max_cost_usd:
+            raise BudgetExceeded(
+                f"budget cap ${cfg.experiment.max_cost_usd:.2f} reached after "
+                f"${spent:.4f}; stopping before {key.as_label()}"
             )
-            if spent + trial_cost > cfg.experiment.max_cost_usd:
-                raise BudgetExceeded(
-                    f"budget cap ${cfg.experiment.max_cost_usd:.2f} reached after "
-                    f"${spent:.4f}; stopping before {condition}/{task_id}"
-                )
 
-            if dry_run:
-                executed += 1
-                spent += trial_cost
-                continue
+        if hasattr(model, "reset_provenance"):
+            model.reset_provenance()  # type: ignore[attr-defined]
 
-            # Condition C writes its solution through a WriteAuthority, so the
-            # workdir must be a per-trial scratch copy -- never the task itself.
-            # Handing it tasks/<id>/ would let a run mutate the graded corpus,
-            # which is both an integrity problem and a way to contaminate a
-            # later validation.
-            workspace = _stage_workspace(run_id, task_path, condition)
-            ctx = load_task_context(task_path)
-            trial = _build_condition(condition, model, workspace, cfg.experiment.ablation)
+        # Condition C writes its solution through a WriteAuthority, so the
+        # workdir must be a per-trial scratch copy -- never the task itself.
+        # Handing it tasks/<id>/ would let a run mutate the graded corpus,
+        # which is both an integrity problem and a way to contaminate a
+        # later validation. The replicate index keeps replicates apart.
+        workspace = _stage_workspace(run_id, task_path, condition, trial_index)
+        ctx = load_task_context(task_path)
+        trial = _build_condition(condition, model, workspace, cfg.experiment.ablation)
 
-            # A provider outage or a malformed response must not destroy the other
-            # 599 trials. Record the trial as explicitly ungraded and continue:
-            # analyze() counts ungraded trials separately and never folds them
-            # into a measured zero. Recording nothing would lose the resume point
-            # and re-run the trial; recording a score would fabricate a result.
-            try:
-                result = trial.run(ctx)
-            except Exception as exc:  # noqa: BLE001 - deliberate boundary
-                failed += 1
-                logger.log_trial(
-                    {
-                        "task_id": task_id,
-                        "condition": condition,
-                        "iterations": 0,
-                        "guardrail_rounds": 0,
-                        "ablated": [],
-                        "rejected_writes": [],
-                        **UNGRADED_METRICS,
-                        "grade_exit_class": "not_graded",
-                        "ungraded_reason": f"{type(exc).__name__}: {redact(str(exc), secret)}",
-                        "synthetic": synthetic,
-                    }
-                )
-                continue
-
+        # A provider outage or a malformed response must not destroy the other
+        # trials. Record the trial as explicitly ungraded and continue:
+        # analyze() counts ungraded trials separately and never folds them
+        # into a measured zero. Recording nothing would lose the resume point
+        # and re-run the trial; recording a score would fabricate a result.
+        #
+        # A rate-limited trial carries `ungraded_reason_code: rate_limited` so a
+        # resume can find it and retry it first. It is emphatically NOT recorded
+        # as a failure or a zero score.
+        try:
+            result = trial.run(ctx)
+        except Exception as exc:  # noqa: BLE001 - deliberate boundary
+            failed += 1
+            ungraded += 1
+            code = getattr(exc, "reason", "condition_error")
             logger.log_trial(
                 {
-                    "task_id": result.task_id,
-                    "condition": result.condition,
-                    "iterations": result.iterations,
-                    "guardrail_rounds": result.guardrail_rounds,
-                    "ablated": result.ablated,
-                    "rejected_writes": result.rejected_writes,
-                    **grade_trial(task_path, workspace, result.final_code, timeout=timeout),
+                    "task_id": task_id,
+                    "condition": condition,
+                    "trial_index": trial_index,
+                    "iterations": 0,
+                    "guardrail_rounds": 0,
+                    "ablated": [],
+                    "rejected_writes": [],
+                    **UNGRADED_METRICS,
+                    "grade_exit_class": "not_graded",
+                    "ungraded_reason": f"{type(exc).__name__}: {redact(str(exc), secret)}",
+                    "ungraded_reason_code": code,
+                    "retryable": code in RETRYABLE_UNGRADED_REASONS,
+                    "provenance": _provenance_of(model),
                     "synthetic": synthetic,
                 }
             )
-            executed += 1
-            spent += trial_cost
+            continue
+
+        logger.log_trial(
+            {
+                "task_id": result.task_id,
+                "condition": result.condition,
+                "trial_index": trial_index,
+                "iterations": result.iterations,
+                "guardrail_rounds": result.guardrail_rounds,
+                "ablated": result.ablated,
+                "rejected_writes": result.rejected_writes,
+                **grade_trial(task_path, workspace, result.final_code, timeout=timeout),
+                "provenance": _provenance_of(model),
+                "synthetic": synthetic,
+            }
+        )
+        executed += 1
+        spent += trial_cost
 
     return {
         "run_id": run_id,
         "executed": executed,
         "skipped": skipped,
         "failed": failed,
+        "ungraded": ungraded,
+        "retried_first": len(retried_first),
         "planned": planned["trials"],
+        "planned_trials": len(order),
+        "planned_order": [k.as_label() for k in order],
+        "cost_estimate_usd": planned["cost_estimate_usd"],
+        "within_budget": planned["within_budget"],
         "spent_usd": round(spent, 4),
         "max_cost_usd": cfg.experiment.max_cost_usd,
         "provider": cfg.model.provider,
         "dry_run": dry_run,
         "synthetic": synthetic,
         "log": str(log_path),
+    }
+
+
+def _provenance_of(model: Any) -> dict[str, Any]:
+    """The per-trial provenance record, or an explicit 'unavailable'.
+
+    Never fabricated: if the model cannot report it, the trial says so rather than
+    inheriting the requested model id as though it were confirmed.
+    """
+    provenance = getattr(model, "provenance", None)
+    if callable(provenance):
+        try:
+            return dict(provenance())
+        except Exception:  # noqa: BLE001 - provenance must never lose a trial
+            return {"error": "provenance unavailable"}
+    return {
+        "provider": getattr(model, "provider", "unknown"),
+        "base_url_host": None,
+        "requested_model_id": None,
+        "returned_model_id": None,
+        "note": "model does not report provenance",
     }
 
 
@@ -398,14 +651,22 @@ def grade_trial(
     }
 
 
-def _stage_workspace(run_id: str, task_path: Path, condition: str) -> Path:
+def _stage_workspace(
+    run_id: str, task_path: Path, condition: str, trial_index: int = 0
+) -> Path:
     """Copy a task into a scratch workspace for one trial.
 
     The copy is what the condition writes into. `hidden_tests` is deliberately
     not copied: no condition needs it, and leaving it out means a workspace
     cannot leak the graded suite into a prompt or a repair loop.
+
+    The replicate index is in the directory name. Without it, replicate 2 of a
+    (task, condition) reuses replicate 1's workspace, and any file the first
+    replicate left behind is visible to the second -- so replicates stop being
+    independent.
     """
-    workspace = REPO_ROOT / "results" / run_id / "work" / f"{task_path.name}__{condition}"
+    suffix = "" if trial_index == 0 else f"__{trial_index}"
+    workspace = REPO_ROOT / "results" / run_id / "work" / f"{task_path.name}__{condition}{suffix}"
     if workspace.exists():
         shutil.rmtree(workspace)
     workspace.mkdir(parents=True, exist_ok=True)
@@ -445,9 +706,18 @@ def analyze(
     With no recorded trials this writes a report that explicitly says there is
     no data, rather than an empty-looking results table.
     """
-    trials = load_trials(run_id)
+    records = load_trials(run_id)
     out_dir = Path(output_dir or (REPO_ROOT / "results" / run_id / "analysis"))
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # A retried trial appears twice in the log: the ungraded attempt and the
+    # graded one. Only the latest record per (task, condition, trial_index)
+    # counts, so a recovery does not inflate n and a later attempt is not
+    # shadowed by the failure that preceded it.
+    latest: dict[tuple[str, str, int], dict[str, Any]] = {}
+    for record in records:
+        latest[_key_of(record).as_tuple()] = record
+    trials = list(latest.values())
 
     # A trial that could not be graded carries hidden_pass_rate 0.0, which is
     # indistinguishable from a trial that genuinely scored zero. Averaging it in
@@ -455,8 +725,12 @@ def analyze(
     # from graded trials only and the ungraded ones are counted and reported.
     graded = [t for t in trials if t.get("graded", True)]
     ungraded = [t for t in trials if not t.get("graded", True)]
+    # The same vocabulary as `attrition_by_condition`: the stable reason *code*
+    # first, free text only as a fallback. Using exception text here and codes in
+    # the attrition table below would print two names for one cause in one report.
     ungraded_reasons = sorted(
-        {str(t.get("grade_reason") or "no reason recorded") for t in ungraded}
+        str(t.get("ungraded_reason_code") or t.get("grade_reason") or "no reason recorded")
+        for t in ungraded
     )
 
     by_condition: dict[str, list[dict[str, Any]]] = {}
@@ -467,13 +741,21 @@ def analyze(
         name: metrics.aggregate_trials(records) for name, records in by_condition.items()
     }
 
+    attrition = attrition_by_condition(trials)
     contrasts: dict[str, Any] = {}
     if "b" in by_condition and "c" in by_condition:
-        b = _aligned(by_condition["b"], by_condition["c"])
-        if b:
-            contrasts["c_minus_b_hidden_pass_rate"] = stats.analyze_condition_contrast(
-                b["c"], b["b"]
-            )
+        # Fed *every* trial for b and c, not just the graded ones. Pairing has to
+        # see the missing cells to count them: passed only graded records, a cell
+        # ungraded in b looks identical to a cell that was never run, and the
+        # report would state "0 pairs dropped" while silently dropping one.
+        b_records = [t for t in trials if t.get("condition") == "b"]
+        c_records = [t for t in trials if t.get("condition") == "c"]
+        pairs = _aligned(b_records, c_records)
+        if pairs:
+            contrasts["c_minus_b_hidden_pass_rate"] = {
+                **stats.analyze_condition_contrast(pairs["c"], pairs["b"]),
+                "pairing": pairs["pairing"],
+            }
 
     mixed = stats.mixed_effects_model(
         outcomes=[float(t.get("hidden_pass_rate", 0.0)) for t in graded],
@@ -488,10 +770,15 @@ def analyze(
         "n_graded": len(graded),
         "n_ungraded": len(ungraded),
         "ungraded_reasons": ungraded_reasons,
-        "synthetic": True,
+        # Derived from the trial records, not asserted. A run log with no
+        # `synthetic` field at all predates the field; treat that as unverified
+        # rather than silently reporting the mock provenance for real data.
+        "synthetic": _is_synthetic_records(trials),
+        "attrition": attrition,
         "by_condition": condition_stats,
         "contrasts": contrasts,
         "mixed_effects": mixed,
+        "provenance": summarise_provenance(trials),
         "seed": 42,
     }
 
@@ -525,18 +812,199 @@ def analyze(
     return analysis
 
 
-def _aligned(b_records: list[dict], c_records: list[dict]) -> dict[str, list[float]] | None:
-    """Pair b and c results by task id so the contrast is genuinely paired."""
-    b_by_task: dict[str, float] = {
-        str(r.get("task_id")): float(r.get("hidden_pass_rate", 0.0)) for r in b_records
+def _is_synthetic_records(trials: list[dict[str, Any]]) -> bool:
+    """Whether these records came from a synthetic (mock) model.
+
+    `any` over the recorded flags, so a single real-provider trial in an otherwise
+    mock run reports False. Defaulting to True when no trial recorded the flag
+    would stamp "synthetic" onto data of unknown origin.
+    """
+    if not trials:
+        return True
+    return all(t.get("synthetic", False) for t in trials)
+
+
+def attrition_by_condition(trials: list[dict[str, Any]]) -> dict[str, Any]:
+    """n_graded and n_ungraded per condition and per task, with reasons.
+
+    Attrition is a threat to validity, not a footnote: if condition C loses
+    30% of its trials to rate limits and condition B loses 2%, the contrast is
+    between two different subsets of the corpus and the difference in means is
+    partly a difference in what survived. So the counts are reported per
+    condition and per task, and an imbalance above the threshold is raised above
+    the results table rather than in a footnote.
+    """
+    by_condition: dict[str, dict[str, Any]] = {}
+    by_task: dict[str, dict[str, Any]] = {}
+    by_condition_task: dict[str, dict[str, dict[str, int]]] = {}
+
+    for record in trials:
+        is_graded = bool(record.get("graded", True))
+        condition = str(record.get("condition", "unknown"))
+        task_id = str(record.get("task_id", "unknown"))
+        reason = (
+            "graded"
+            if is_graded
+            else str(
+                record.get("ungraded_reason_code")
+                or record.get("grade_reason")
+                or "ungraded"
+            )
+        )
+
+        for bucket, key in ((by_condition, condition), (by_task, task_id)):
+            entry = bucket.setdefault(key, {"n_total": 0, "n_graded": 0, "n_ungraded": 0,
+                                            "reasons": {}})
+            entry["n_total"] += 1
+            entry["n_graded" if is_graded else "n_ungraded"] += 1
+            # `reasons` records why trials were *lost*. A graded trial is not a
+            # reason, so it is counted in n_graded and left out here -- mixing the
+            # two would make the column unreadable.
+            if not is_graded:
+                entry["reasons"][reason] = entry["reasons"].get(reason, 0) + 1
+
+        cell = by_condition_task.setdefault(condition, {}).setdefault(
+            task_id, {"n_total": 0, "n_graded": 0, "n_ungraded": 0}
+        )
+        cell["n_total"] += 1
+        cell["n_graded" if is_graded else "n_ungraded"] += 1
+
+    # Imbalance is measured in attrition *points*: the spread of the ungraded
+    # share across conditions. Compared on the raw count it would flag a big run
+    # with equal rates and miss a small run with a badly skewed one.
+    rates = {
+        name: (entry["n_ungraded"] / entry["n_total"]) if entry["n_total"] else 0.0
+        for name, entry in by_condition.items()
     }
-    c_by_task: dict[str, float] = {
-        str(r.get("task_id")): float(r.get("hidden_pass_rate", 0.0)) for r in c_records
+    spread = (max(rates.values()) - min(rates.values())) if len(rates) > 1 else 0.0
+    worst = max(rates, key=lambda k: rates[k]) if rates else None
+
+    return {
+        "by_condition": by_condition,
+        "by_task": by_task,
+        "by_condition_task": by_condition_task,
+        "attrition_rate_by_condition": {k: round(v, 4) for k, v in sorted(rates.items())},
+        "imbalance_points": round(spread * 100.0, 2),
+        "imbalanced": bool(
+            len(rates) > 1
+            and spread * 100.0 > ATTRITION_IMBALANCE_POINTS
+        ),
+        "worst_condition": worst if spread * 100.0 > ATTRITION_IMBALANCE_POINTS else None,
+        "threshold_points": ATTRITION_IMBALANCE_POINTS,
     }
-    shared = sorted(set(b_by_task) & set(c_by_task))
+
+
+def summarise_provenance(trials: list[dict[str, Any]]) -> dict[str, Any]:
+    """What actually answered: provider, host, requested and returned model ids.
+
+    Collapsed across trials because a run normally uses one of each, and a run
+    that does not is exactly the thing a reader needs to see. Any disagreement
+    between requested and returned ids is surfaced as a list rather than hidden,
+    since a silent alias means the results describe a different model than the one
+    the study names.
+    """
+    providers: set[str] = set()
+    hosts: set[str] = set()
+    requested: set[str] = set()
+    returned: set[str] = set()
+    custom_base_url = False
+    total_retries = 0
+    missing_returned = 0
+
+    for record in trials:
+        prov = record.get("provenance") or {}
+        if not isinstance(prov, dict):
+            continue
+        if prov.get("provider"):
+            providers.add(str(prov["provider"]))
+        if prov.get("base_url_host"):
+            hosts.add(str(prov["base_url_host"]))
+        if prov.get("requested_model_id"):
+            requested.add(str(prov["requested_model_id"]))
+        if prov.get("returned_model_id"):
+            returned.add(str(prov["returned_model_id"]))
+        else:
+            missing_returned += 1
+        if prov.get("allow_custom_base_url"):
+            custom_base_url = True
+        total_retries += int(prov.get("retries", 0) or 0)
+
+    mismatch = sorted(returned - requested)
+    return {
+        "providers": sorted(providers),
+        "base_url_hosts": sorted(hosts),
+        "requested_model_ids": sorted(requested),
+        "returned_model_ids": sorted(returned),
+        "model_id_mismatch": mismatch,
+        "custom_base_url": custom_base_url,
+        "total_retries": total_retries,
+        "trials_without_returned_model_id": missing_returned,
+    }
+
+
+def _aligned(b_records: list[dict], c_records: list[dict]) -> dict[str, Any] | None:
+    """Pair b and c results by (task_id, trial_index) so the contrast is paired.
+
+    Only cells graded in *both* conditions form a pair. A pair dropped because one
+    side is missing is counted and named, never quietly discarded: the headline
+    comparison is over the surviving pairs, and the report says how many that was.
+
+    Keying on task_id alone (as this once did) would keep only the last replicate
+    per task, because a dict comprehension overwrites on duplicate keys. The
+    replicate index is what makes the pairing correct.
+    """
+    # Only graded cells can supply a value. Ungraded ones are kept aside so the
+    # dropped counts below can distinguish "missing measurement" from "never run".
+    def _graded(records: list[dict[str, Any]]) -> dict[tuple[str, int], float]:
+        return {
+            _pair_key(r): float(r.get("hidden_pass_rate", 0.0))
+            for r in records
+            if r.get("graded", True)
+        }
+
+    b_all = {_pair_key(r) for r in b_records}
+    c_all = {_pair_key(r) for r in c_records}
+    b_by_cell = _graded(b_records)
+    c_by_cell = _graded(c_records)
+    shared = sorted(set(b_by_cell) & set(c_by_cell))
     if not shared:
         return None
-    return {"b": [b_by_task[t] for t in shared], "c": [c_by_task[t] for t in shared]}
+    # A cell absent from one condition's graded set was either ungraded there or
+    # never run there. Both drop the pair; reporting them separately is what makes
+    # the attrition visible instead of looking like a smaller study.
+    b_only = sorted(set(b_all) - set(c_all) - set(c_by_cell))
+    c_only = sorted(set(c_all) - set(b_all) - set(b_by_cell))
+    b_ungraded = sorted((set(b_all) - set(b_by_cell)) & set(c_all))
+    c_ungraded = sorted((set(c_all) - set(c_by_cell)) & set(b_all))
+    return {
+        "b": [b_by_cell[cell] for cell in shared],
+        "c": [c_by_cell[cell] for cell in shared],
+        "pairing": {
+            "key": "(task_id, trial_index)",
+            "n_pairs": len(shared),
+            "n_dropped": len(b_only) + len(c_only) + len(b_ungraded) + len(c_ungraded),
+            "n_b_ungraded": len(b_ungraded),
+            "n_c_ungraded": len(c_ungraded),
+            "n_b_missing": len(b_only),
+            "n_c_missing": len(c_only),
+            "dropped_b_ungraded": [list(c) for c in b_ungraded],
+            "dropped_c_ungraded": [list(c) for c in c_ungraded],
+            "dropped_b_missing": [list(c) for c in b_only],
+            "dropped_c_missing": [list(c) for c in c_only],
+            "note": (
+                "pairs are (task_id, trial_index) cells graded in BOTH conditions; "
+                f"{len(b_ungraded)} ungraded in b and {len(c_ungraded)} ungraded in c were "
+                "dropped because one side has no measurement"
+            ),
+        },
+    }
+
+
+def _pair_key(record: dict[str, Any]) -> tuple[str, int]:
+    return (
+        str(record.get("task_id", "")),
+        int(record.get("trial_index", 0) or 0),
+    )
 
 
 __all__ = [

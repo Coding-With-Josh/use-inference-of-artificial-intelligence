@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from pilot.config.config import load_config
 from pilot.runner import run as runner
 from pilot.sandbox import docker_runner
 
@@ -209,7 +210,9 @@ def test_run_records_measured_metrics_not_hard_coded_ones(tmp_path, monkeypatch)
 
     monkeypatch.setattr(runner, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(runner, "TASKS_DIR", tasks)
-    summary = runner.run(run_id="grade-probe", conditions=("b",), timeout=180)
+    cfg = load_config()
+    cfg.experiment.n_trials = 1  # one trial: this test is about grading, not sample size
+    summary = runner.run(cfg, run_id="grade-probe", conditions=("b",), timeout=180)
     assert summary["executed"] == 1
 
     records = runner.load_trials("grade-probe")
@@ -234,7 +237,9 @@ def test_trial_record_is_valid_jsonl(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runner, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(runner, "TASKS_DIR", tasks)
-    runner.run(run_id="jsonl-probe", conditions=("b",), timeout=180)
+    cfg = load_config()
+    cfg.experiment.n_trials = 1
+    runner.run(cfg, run_id="jsonl-probe", conditions=("b",), timeout=180)
 
     log = tmp_path / "results" / "jsonl-probe" / "trials.jsonl"
     for line in log.read_text(encoding="utf-8").splitlines():

@@ -70,10 +70,16 @@ def test_study1_plan_prints_counts_and_budget():
 
 
 def test_study1_run_dry_run_makes_no_model_call():
+    """A dry run reports the plan instead of a run summary.
+
+    It never executes anything, so `executed=` would be a lie; what it prints is
+    the exact list of trials it would run.
+    """
     result = runner.invoke(app, ["study1-run", "--run-id", "cli-dry", "--dry-run"])
     assert result.exit_code == 0
-    assert "dry_run=True" in result.stdout
-    assert "executed=" in result.stdout
+    assert "DRY RUN: run_id=cli-dry would execute" in result.stdout
+    assert "no model called" in result.stdout
+    assert "would run a/t01_merge_intervals" in result.stdout
 
 
 def test_study1_run_refuses_an_impossible_budget(monkeypatch):

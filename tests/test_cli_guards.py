@@ -12,6 +12,7 @@ produce the wrong experiment:
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,8 @@ def test_cli_dry_run_with_a_valid_ablation() -> None:
         app, ["study1-run", "--run-id", "abl-cli", "--dry-run", "--ablate", "context,guardrails"]
     )
     assert result.exit_code == 0, result.output
+    # A dry run prints its plan rather than a completed-run summary, but the
+    # run_id still identifies which plan this is.
     assert "run_id=abl-cli" in result.output
 
 
@@ -136,11 +139,30 @@ def test_the_cap_is_rechecked_per_trial_not_only_against_the_plan() -> None:
     )
 
 
-def test_budget_exceeded_exits_with_code_3() -> None:
+def test_budget_exceeded_exits_with_code_3(monkeypatch) -> None:
+    """The budget guard must abort the run with exit 3, before spending anything.
+
+    Previously this ran a real full-corpus study under the default cap and asserted
+    `exit_code in (0, 3)`, which passed whether or not the guard fired. It now pins
+    a cap that cannot be met, so the guard is the only thing that can produce exit
+    3 -- and no trial runs, so the test does not scale with N_TRIALS.
+    """
+    cfg = load_config()
+    cfg.model.provider = "mock"
+    cfg.model.id = "mock"
+    cfg.experiment.max_cost_usd = 0.0
+    monkeypatch.setattr("pilot.cli.runner.load_config", lambda *a, **k: cfg)
+
+    # The log is append-only and survives across runs, so a leftover would make
+    # this assertion fail for a reason that has nothing to do with the guard.
+    shutil.rmtree(Path("results") / "budget-cli", ignore_errors=True)
+
     result = runner_cli.invoke(app, ["study1-run", "--run-id", "budget-cli"])
-    # Default cap is generous, so this should not trip; assert the wiring exists
-    # by checking the exception path is reachable through the CLI in principle.
-    assert result.exit_code in (0, 3)
+    assert result.exit_code == 3, result.output
+    assert "budget guard" in result.output
+    # Aborted before any trial, so nothing was recorded.
+    assert not (Path("results") / "budget-cli" / "trials.jsonl").exists()
+    shutil.rmtree(Path("results") / "budget-cli", ignore_errors=True)
 
 
 # --------------------------------------------------------------------------
@@ -155,8 +177,11 @@ def test_a_dry_run_records_nothing_and_therefore_has_nothing_to_resume() -> None
     cfg.experiment.n_trials = 1
     cfg.experiment.max_cost_usd = 1000.0
 
+    n = len(runner.discover_task_ids())
     first = runner.run(cfg, run_id="resume-dry", conditions=("a",), dry_run=True)
-    assert first["executed"] == 10
+    # Executed nothing; planned n tasks x 1 condition x n_trials.
+    assert first["executed"] == 0
+    assert first["planned_trials"] == n * cfg.experiment.n_trials
     assert not (Path("results") / "resume-dry" / "trials.jsonl").exists()
 
     second = runner.run(cfg, run_id="resume-dry", conditions=("a",), dry_run=True)
@@ -203,7 +228,7 @@ def test_no_resume_re_executes_everything() -> None:
         cfg, run_id="noresume-check", conditions=("a",), dry_run=True, resume=False
     )
     assert again["skipped"] == 0, "--no-resume must ignore the existing log"
-    assert again["executed"] == len(ids)
+    assert again["planned_trials"] == len(ids) * cfg.experiment.n_trials
 
 
 def test_a_malformed_trailing_log_line_does_not_abort_resume() -> None:
@@ -216,8 +241,8 @@ def test_a_malformed_trailing_log_line_does_not_abort_resume() -> None:
         encoding="utf-8",
     )
     keys = runner._completed_keys(log)
-    assert ("t01_merge_intervals", "a") in keys
-    assert ("t02_slugify", "") not in keys
+    assert ("t01_merge_intervals", "a", 0) in keys
+    assert ("t02_slugify", "", 0) not in keys
 
 
 def test_resume_does_not_rebill_skipped_trials() -> None:

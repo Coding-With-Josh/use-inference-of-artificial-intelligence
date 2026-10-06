@@ -41,7 +41,18 @@ class AnthropicModel(_HttpModel):
             "anthropic-version": API_VERSION,
             "content-type": "application/json",
         }
+        headers.update(self._idempotency_headers(prompt, kwargs.get("system")))
         return f"{self.base_url}/messages", headers, json.dumps(body).encode("utf-8")
+
+    def _returned_model_id(self, payload: dict[str, Any]) -> str | None:
+        """Anthropic echoes the resolved model id back, e.g. with a date suffix.
+
+        That is why this is recorded separately from the requested id: the value
+        that comes back routinely differs from the value that was sent, and the
+        report should show which one actually answered.
+        """
+        name = payload.get("model")
+        return str(name) if isinstance(name, str) else None
 
     def _unwrap(self, payload: dict[str, Any]) -> str:
         # Raise on a malformed envelope rather than returning "" -- an empty

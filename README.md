@@ -57,14 +57,50 @@ Three things worth knowing:
 - **the default applies to study runs only.** `demo-mock` and the test suite pin
   `PROVIDER=mock` themselves, because their contract is "offline and
   watermarked". a key in your shell cannot turn them into a real billed run.
-- **a `*_BASE_URL` override redirects the key.** `study1-plan` and `study1-run`
-  print a warning when it points somewhere other than the provider's official
-  host. proxies are legitimate, so it warns rather than blocks — but a
-  credential silently going to a third party should never be invisible.
-- **no automatic retries.** the POST is not idempotent, so a retry after a
-  timeout can double-charge and yield two different completions for one trial. a
-  provider failure is recorded as an explicitly *ungraded* trial and the matrix
-  continues.
+- **a `*_BASE_URL` override redirects the key, and is refused unless you say so.**
+  `study1-plan` and `study1-run` exit 4 when a base URL points somewhere other
+  than the provider's official host. proxies and gateways are legitimate, so
+  `--allow-custom-base-url` permits one — and the override is then recorded in
+  every trial's provenance, so a proxied run is identifiable after the fact.
+- **429 and 5xx are retried, with backoff, honouring `Retry-After`** (capped at
+  60 s, since that header is untrusted remote input). Each retry reuses the same
+  `Idempotency-Key`, so a conforming provider dedupes it. When retries run out,
+  the trial is recorded as **ungraded with reason `rate_limited`** — never as a
+  failure or a zero — and a resume retries it first.
+  Timeouts and refused connections are **not** retried: there is no status, so no
+  way to tell whether the request was served.
+
+## pilot mode
+
+Preview a small run before committing to a real one. `--dry-run` needs no API key,
+makes no network call, grades nothing, and writes nothing:
+
+```bash
+pilot study1-run --tasks t01,t07 --trials 3 --conditions b,c --dry-run
+```
+
+```
+DRY RUN: would execute 12 trial(s) for provider mock
+  would run b/t01_merge_intervals
+  would run b/t01_merge_intervals#1
+  ...
+DRY RUN: estimated_cost_usd=0.1872 within_budget=True (no model called, nothing graded, nothing written)
+```
+
+Drop `--dry-run` to actually run it. Task ids may be full (`t07_file_serving`) or
+an unambiguous prefix (`t07`); an unknown or ambiguous id is a configuration
+error, not a silently shorter run.
+
+## attrition and pairing
+
+The report shows `n_graded`/`n_ungraded` per condition and per task, with reasons,
+and warns **above the results table** when the ungraded share differs between
+conditions by more than 5 percentage points — at that point the conditions are
+being compared over different subsets of the corpus.
+
+The headline contrast uses `(task, replicate)` pairs graded in **both**
+conditions. Dropped pairs are counted and named in the report; they are not zeros.
+See `docs/metrics.md`.
 
 ## cost and safety notes
 

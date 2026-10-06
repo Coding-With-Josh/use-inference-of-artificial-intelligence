@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import pytest
 
@@ -141,9 +142,25 @@ def test_key_absent_from_repr_and_describe(cls: Adapter, ok: dict[str, Any]) -> 
     assert described["has_api_key"] is True
     assert SECRET not in json.dumps(described)
     # describe() is written into run provenance, so it must be safe to log verbatim.
+    # An exact key set is asserted deliberately: it is what makes "no new field can
+    # quietly start carrying the key" checkable. The provenance and retry fields
+    # added here are non-secret by construction, and `base_url_host` is a hostname.
     assert set(described) == {
-        "provider", "model_id", "temperature", "max_tokens", "base_url", "has_api_key"
+        "provider",
+        "model_id",
+        "requested_model_id",
+        "returned_model_id",
+        "temperature",
+        "max_tokens",
+        "base_url",
+        "base_url_host",
+        "allow_custom_base_url",
+        "returned_model_ids",
+        "retries",
+        "has_api_key",
     }
+    # The override is recorded rather than hidden, so a proxied run is identifiable.
+    assert described["base_url_host"] == urlparse(described["base_url"]).netloc
 
 
 @pytest.mark.parametrize("cls,ok", _adapters())
@@ -249,8 +266,10 @@ def test_completion_with_newlines_cannot_forge_a_second_trial_record(
     from pilot.runner.run import _completed_keys
 
     completed = _completed_keys(tmp_path / "results" / "jsonl-injection" / "trials.jsonl")
-    assert completed == {("real", "a")}, "forged trial key must not be resumable"
-    assert ("forged", "a") not in completed
+    # The key is (task_id, condition, trial_index); a forged record lacking a
+    # trial_index would otherwise be resumable as ("forged", "a", 0).
+    assert completed == {("real", "a", 0)}, "forged trial key must not be resumable"
+    assert ("forged", "a", 0) not in completed
 
 
 # --------------------------------------------------------------------------
@@ -524,63 +543,3 @@ def test_default_provider_is_groq_but_study_paths_pin_the_mock(
     manifest = json.loads(manifest_path.read_text())
     assert manifest["provider"] == "mock", "demo-mock must pin the mock"
     assert manifest["synthetic"] is True
-
-
-# --------------------------------------------------------------------------
-# Base URL redirection (warn, do not block)
-# --------------------------------------------------------------------------
-
-
-def test_official_base_url_produces_no_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    from pilot.config.config import Config
-    from pilot.models.registry import warn_if_unusual_base_url
-
-    cfg = Config()
-    cfg.model.provider = "groq"
-    monkeypatch.setenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
-    assert warn_if_unusual_base_url(cfg) is None
-
-
-def test_third_party_base_url_warns_and_names_the_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    from pilot.config.config import Config
-    from pilot.models.registry import warn_if_unusual_base_url
-
-    cfg = Config()
-    cfg.model.provider = "anthropic"
-    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://agentrouter.org/")
-    warning_text = warn_if_unusual_base_url(cfg)
-    assert warning_text is not None
-    assert "agentrouter.org" in warning_text
-    assert "api.anthropic.com" in warning_text
-    assert "ANTHROPIC_API_KEY" in warning_text or "key" in warning_text
-
-
-def test_a_subdomain_of_an_official_host_is_not_warned(monkeypatch: pytest.MonkeyPatch) -> None:
-    from pilot.config.config import Config
-    from pilot.models.registry import warn_if_unusual_base_url
-
-    cfg = Config()
-    cfg.model.provider = "openai"
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://eu.api.openai.com/v1")
-    assert warn_if_unusual_base_url(cfg) is None
-
-
-def test_a_lookalike_host_is_warned(monkeypatch: pytest.MonkeyPatch) -> None:
-    """api.openai.com.evil.test must not pass as an official host."""
-    from pilot.config.config import Config
-    from pilot.models.registry import warn_if_unusual_base_url
-
-    cfg = Config()
-    cfg.model.provider = "openai"
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com.evil.test/v1")
-    assert warn_if_unusual_base_url(cfg) is not None
-
-
-def test_no_warning_when_no_override_is_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    from pilot.config.config import Config
-    from pilot.models.registry import warn_if_unusual_base_url
-
-    monkeypatch.delenv("GROQ_BASE_URL", raising=False)
-    cfg = Config()
-    cfg.model.provider = "groq"
-    assert warn_if_unusual_base_url(cfg) is None

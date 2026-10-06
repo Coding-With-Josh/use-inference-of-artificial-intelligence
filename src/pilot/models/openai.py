@@ -41,7 +41,13 @@ class OpenAIModel(_HttpModel):
             "authorization": f"Bearer {self._key.reveal()}",
             "content-type": "application/json",
         }
+        headers.update(self._idempotency_headers(prompt, system))
         return f"{self.base_url}/chat/completions", headers, json.dumps(body).encode("utf-8")
+
+    def _returned_model_id(self, payload: dict[str, Any]) -> str | None:
+        """Both OpenAI and Groq echo the resolved model id in `model`."""
+        name = payload.get("model")
+        return str(name) if isinstance(name, str) else None
 
     def _unwrap(self, payload: dict[str, Any]) -> str:
         try:

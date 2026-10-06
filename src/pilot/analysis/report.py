@@ -33,11 +33,140 @@ def _effect_size_lines(effect_size: dict[str, Any]) -> list[str]:
             f"- effect size: not defined "
             f"({effect_size.get('note', 'insufficient paired data')})"
         ]
+    # Labelled secondary on purpose. dz and g are *not* in the preregistration
+    # template, so reporting them as if they were preregistered would misrepresent
+    # what was decided in advance. See docs/metrics.md.
     return [
-        f"- effect size: Cohen's dz={_fmt(effect_size['cohens_dz'])}, "
+        f"- effect size (**secondary, not preregistered**): "
+        f"Cohen's dz={_fmt(effect_size['cohens_dz'])}, "
         f"Hedges' g={_fmt(effect_size['hedges_g'])} "
-        f"(sd of paired differences={_fmt(effect_size['sd_diff'])})"
+        f"(sd of paired differences={_fmt(effect_size['sd_diff'])})",
+        "> dz and g are reported for context. The preregistered effects are the",
+        "> mean difference with its bootstrap CI. See docs/metrics.md.",
     ]
+
+
+def _attrition_lines(analysis: dict[str, Any]) -> list[str]:
+    """Per-condition and per-task attrition, plus the imbalance warning.
+
+    The imbalance warning goes above the results table, not in a footnote. If the
+    conditions lost measurably different shares of their trials, the comparison
+    below is between two different subsets of the corpus, and a reader who reaches
+    the table without seeing that has been told something misleading by omission.
+    """
+    attrition = analysis.get("attrition") or {}
+    by_condition = attrition.get("by_condition") or {}
+    if not by_condition:
+        return []
+
+    lines = ["## attrition", ""]
+    lines += [
+        "| condition | planned | graded | ungraded | ungraded % | reasons |",
+        "|---|---|---|---|---|---|",
+    ]
+    for name, entry in sorted(by_condition.items()):
+        total = entry.get("n_total", 0)
+        ungraded = entry.get("n_ungraded", 0)
+        pct = (100.0 * ungraded / total) if total else 0.0
+        reasons = ", ".join(
+            f"{reason}={count}" for reason, count in sorted(entry.get("reasons", {}).items())
+        )
+        lines.append(
+            f"| {name} | {total} | {entry.get('n_graded', 0)} | {ungraded} | "
+            f"{pct:.1f} | {reasons or 'n/a'} |"
+        )
+    lines.append("")
+
+    by_task = attrition.get("by_task") or {}
+    if by_task:
+        lines += ["<details><summary>per task</summary>", ""]
+        lines += ["| task | graded | ungraded |", "|---|---|---|"]
+        for name, entry in sorted(by_task.items()):
+            lines.append(
+                f"| {name} | {entry.get('n_graded', 0)} | {entry.get('n_ungraded', 0)} |"
+            )
+        lines += ["", "</details>", ""]
+
+    if attrition.get("imbalanced"):
+        lines += [
+            f"> **warning: differential attrition of "
+            f"{_fmt(attrition.get('imbalance_points', 0.0), 1)} points.**",
+            f"> Condition `{attrition.get('worst_condition')}` lost more trials than the",
+            f"> others, above the {attrition.get('threshold_points')}-point threshold.",
+            "> The conditions are therefore compared over different subsets of the",
+            "> corpus, and the difference below is partly a difference in what",
+            "> survived. Read the effect sizes with that in mind.",
+            "",
+        ]
+    return lines
+
+
+def _pairing_lines(label: str, pairing: dict[str, Any]) -> list[str]:
+    """State how many (task, trial) pairs the headline contrast actually used."""
+    if not pairing:
+        return []
+    dropped = pairing.get("n_dropped", 0)
+    lines = [
+        f"- pairing: {pairing.get('n_pairs', 0)} {pairing.get('key', 'pairs')} "
+        f"graded in both conditions",
+    ]
+    if dropped:
+        reasons = []
+        if pairing.get("n_b_ungraded"):
+            reasons.append(f"{pairing['n_b_ungraded']} ungraded in the first condition")
+        if pairing.get("n_c_ungraded"):
+            reasons.append(f"{pairing['n_c_ungraded']} ungraded in the second")
+        if pairing.get("n_b_missing"):
+            reasons.append(f"{pairing['n_b_missing']} missing from the first condition")
+        if pairing.get("n_c_missing"):
+            reasons.append(f"{pairing['n_c_missing']} missing from the second")
+        lines.append(f"- **{dropped} pair(s) dropped:** " + "; ".join(reasons))
+        lines.append(
+            "> These cells contribute to no number in this section. They are not"
+            " zeros and they are not counter-evidence."
+        )
+    else:
+        lines.append("- dropped pairs: 0")
+    lines.append(f"> note: {pairing.get('note', '')}")
+    return lines
+
+
+def _provenance_lines(provenance: dict[str, Any]) -> list[str]:
+    """What actually answered: provider, host, requested and returned model."""
+    if not provenance:
+        return []
+    lines = [
+        f"- provider: {', '.join(provenance.get('providers') or ['unknown'])}",
+        f"- base_url host: "
+        f"{', '.join(provenance.get('base_url_hosts') or ['n/a (mock, offline)'])}",
+        f"- requested model id: "
+        f"{', '.join(provenance.get('requested_model_ids') or ['n/a'])}",
+        f"- returned model id: "
+        f"{', '.join(provenance.get('returned_model_ids') or ['not reported by provider'])}",
+    ]
+    mismatch = provenance.get("model_id_mismatch") or []
+    if mismatch:
+        lines += [
+            f"- **the API reported a different model than was requested: "
+            f"{', '.join(mismatch)}**",
+            "> These results describe a model the study did not name. Treat them as",
+            "> evidence about the returned id, not the requested one.",
+        ]
+    if provenance.get("custom_base_url"):
+        lines.append(
+            "- **a non-official base URL was in effect** (--allow-custom-base-url): "
+            "the API key was sent to a host other than the provider's own"
+        )
+    retries = provenance.get("total_retries", 0)
+    if retries:
+        lines.append(f"- provider retries across the run: {retries}")
+    missing = provenance.get("trials_without_returned_model_id", 0)
+    if missing:
+        lines.append(
+            f"- trials with no returned model id reported: {missing} "
+            "(the provider's envelope did not carry one)"
+        )
+    return lines
 
 
 def render_report(analysis: dict[str, Any], figures: list[Path] | None = None) -> str:
@@ -112,6 +241,8 @@ def render_report(analysis: dict[str, Any], figures: list[Path] | None = None) -
         ]
         return "\n".join(lines)
 
+    lines += _attrition_lines(analysis)
+
     lines += [
         "## outcome by condition",
         "",
@@ -145,6 +276,7 @@ def render_report(analysis: dict[str, Any], figures: list[Path] | None = None) -
                 f"- mean difference: {_fmt(effect.get('mean_diff', 0.0))} "
                 f"(95% CI {_fmt(effect.get('ci_low', 0.0))} to {_fmt(effect.get('ci_high', 0.0))})",
                 *_effect_size_lines(result.get("effect_size", {})),
+                *_pairing_lines(label, result.get("pairing", {})),
                 f"- holm-adjusted p (family of {holm.get('m', 0)}): "
                 f"{[_fmt(p) for p in holm.get('adjusted', [])]}",
                 f"- reject at alpha={holm.get('alpha', 0.05)}: {holm.get('reject', [])}",
@@ -191,6 +323,8 @@ def render_report(analysis: dict[str, Any], figures: list[Path] | None = None) -
         "",
         f"- synthetic: {synthetic}",
         f"- seed: {analysis.get('seed', 'n/a')}",
+        "",
+        *_provenance_lines(analysis.get("provenance") or {}),
         "",
     ]
     return "\n".join(lines)

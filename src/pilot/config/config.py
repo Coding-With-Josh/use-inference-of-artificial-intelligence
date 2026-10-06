@@ -41,6 +41,15 @@ class ModelConfig(BaseModel):
     )
     seed: int | None = None
     max_tokens: int = Field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "2048")))
+    # A *_BASE_URL override redirects this provider's API key to another host.
+    # Proxies and gateways are legitimate, but silently shipping a credential to
+    # a third party is not something a forgotten environment variable should do,
+    # so it requires an explicit opt-in -- the --allow-custom-base-url flag, or
+    # this variable. Either way it is recorded in every trial's provenance.
+    allow_custom_base_url: bool = Field(
+        default_factory=lambda: os.getenv("ALLOW_CUSTOM_BASE_URL", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
     # Left None so the per-provider default applies unless explicitly overridden.
     price_in_per_mtok: float | None = Field(
         default_factory=lambda: (
@@ -91,6 +100,10 @@ class ModelConfig(BaseModel):
 
 
 class ExperimentConfig(BaseModel):
+    # Replicates per (task, condition). This is the study's sample size and is
+    # left at 20: it is a preregistered quantity, so it is not something a code
+    # change should quietly move. For a smoke run, pass --trials explicitly
+    # rather than editing this default.
     n_trials: int = Field(default_factory=lambda: int(os.getenv("N_TRIALS", "20")))
     max_repair_rounds: int = Field(
         default_factory=lambda: int(os.getenv("MAX_REPAIR_ROUNDS", "3"))

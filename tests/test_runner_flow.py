@@ -100,7 +100,13 @@ def test_budget_guard_message_names_the_cap(tasks):
 def test_dry_run_executes_the_control_flow_without_work(tasks):
     summary = runner.run(run_id="dry-probe", tasks_dir=tasks, dry_run=True)
     assert summary["dry_run"] is True
-    assert summary["executed"] > 0
+    # A dry run executes nothing. The plan is the contract, so assert on the plan:
+    # 2 tasks x 3 conditions x N_TRIALS. `executed` must be 0 -- the control flow
+    # is exercised, the work is not.
+    assert summary["executed"] == 0
+    n = Config().experiment.n_trials
+    assert summary["planned_trials"] == 2 * 3 * n
+    assert len(summary["planned_order"]) == summary["planned_trials"]
     assert summary["synthetic"] is True
 
 
@@ -124,7 +130,7 @@ def test_completed_keys_ignores_a_truncated_trailing_line(tmp_path):
     log = tmp_path / "trials.jsonl"
     log.write_text('{"task_id": "t01", "condition": "b"}\n{"task_id": "t02"')
     keys = runner._completed_keys(log)
-    assert keys == {("t01", "b")}
+    assert keys == {("t01", "b", 0)}
 
 
 def test_completed_keys_of_a_missing_log(tmp_path):
@@ -134,7 +140,7 @@ def test_completed_keys_of_a_missing_log(tmp_path):
 def test_completed_keys_ignores_blank_lines(tmp_path):
     log = tmp_path / "trials.jsonl"
     log.write_text('\n\n{"task_id": "t01", "condition": "c"}\n\n')
-    assert runner._completed_keys(log) == {("t01", "c")}
+    assert runner._completed_keys(log) == {("t01", "c", 0)}
 
 
 def test_resume_skips_already_recorded_trials(tasks):
@@ -168,7 +174,10 @@ def test_resume_skips_already_recorded_trials(tasks):
 
 
 def test_trial_key_tuple():
-    assert runner.TrialKey("t01", "b").as_tuple() == ("t01", "b")
+    # The replicate index is part of a trial's identity: pairing/alignment keys on
+    # (task_id, trial_index), so a 2-tuple would make replicates indistinguishable.
+    assert runner.TrialKey("t01", "b").as_tuple() == ("t01", "b", 0)
+    assert runner.TrialKey("t01", "b", 2).as_tuple() == ("t01", "b", 2)
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +227,11 @@ def test_alignment_pairs_by_task_id():
     b = [{"task_id": "t01", "hidden_pass_rate": 0.5}, {"task_id": "t02", "hidden_pass_rate": 0.6}]
     c = [{"task_id": "t02", "hidden_pass_rate": 0.9}, {"task_id": "t01", "hidden_pass_rate": 0.8}]
     aligned = runner._aligned(b, c)
-    assert aligned == {"b": [0.5, 0.6], "c": [0.8, 0.9]}
+    # Sorted by (task_id, trial_index), so the pairing is order-independent.
+    assert aligned["b"] == [0.5, 0.6]
+    assert aligned["c"] == [0.8, 0.9]
+    assert aligned["pairing"]["n_pairs"] == 2
+    assert aligned["pairing"]["n_dropped"] == 0
 
 
 def test_alignment_with_no_shared_tasks_is_none():

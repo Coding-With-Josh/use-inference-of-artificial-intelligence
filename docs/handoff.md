@@ -7,11 +7,11 @@ named; nothing is asserted from memory.
 
 | command | result |
 |---|---|
-| `make test` | 536 passed, coverage 93.06% (gate 85%, unchanged) |
+| `make test` | 604 passed, coverage 93.50% (gate 85%, unchanged) |
 | `make tasks-validate` | 10 tasks, 20 sandbox runs, 120 hidden tests; every reference passed, every starter failed |
 | `make demo-mock` | 20 trials, **20 graded**, 206 hidden tests executed, 3 figures, watermarked report + manifest |
 | `uv run ruff check .` | All checks passed |
-| `uv run mypy src tests` | no issues in 74 source files |
+| `uv run mypy src tests` | no issues in 76 source files |
 
 ## built and tested
 
@@ -58,6 +58,30 @@ named; nothing is asserted from memory.
   billed API run.
 - **analysis** — paired t, Wilcoxon, bootstrap CI, Holm correction, mixed
   effects, figures, markdown report.
+- **base URL opt-in** — a `*_BASE_URL` host that is not the provider's official
+  one is refused (exit 4) from both `study1-plan` and `study1-run`, before a key
+  is sent. `--allow-custom-base-url` or `ALLOW_CUSTOM_BASE_URL=1` permits it, and
+  the override lands in each trial's provenance. `BaseUrlBlocked` subclasses
+  `ProviderError` but is non-retryable, so a blocked host cannot be retried into
+  existence. One construction site (`build_model` in `runner/run.py`) is the
+  check, so no alternate path reaches a client without it.
+- **retry policy** — only 429 and 5xx are retried, with exponential backoff,
+  honouring `Retry-After` capped at 60 s (untrusted remote input). Timeouts and
+  other 4xx are permanent: no status means it is unknowable whether the request
+  was served. Each attempt carries a deterministic `Idempotency-Key` derived from
+  (provider, model, system, prompt), so a conforming provider dedupes a retried
+  5xx. Exhausted retries record the trial **ungraded with reason `rate_limited`**
+  — never failed, never zero — and `study1-run` retries those cells first on
+  resume via `RETRYABLE_UNGRADED_REASONS`.
+- **attrition and pairing** — `n_graded`/`n_ungraded` per condition and per task,
+  with reasons, printed above the results table, plus a warning when the ungraded
+  share differs by more than `ATTRITION_IMBALANCE_POINTS` (5.0). The headline
+  contrast uses `(task_id, trial_index)` pairs graded in both conditions; dropped
+  pairs are counted and named. Pairing is fed *all* trials, not just graded ones,
+  because a cell ungraded on one side is otherwise indistinguishable from a cell
+  that was never run and the report would claim zero drops while dropping one.
+- **pilot mode** — `study1-run --tasks/--trials/--conditions` with `--dry-run`,
+  which returns before any write or model call and needs no API key.
 - **cli** — `study1-plan`, `study1-run`, `study1-analyze`, `tasks-validate`,
   `demo-mock`.
 
@@ -112,9 +136,11 @@ These are the rules the code enforces, each with a test:
   `study2/analysis.py` is exercised only by hand, not by `make test`.
 - `src/pilot/sandbox/docker_runner.py` is at 80% statement coverage; the
   uncovered lines are launcher-failure branches that need Docker to be *absent*.
-- `demo-mock` reports `planned=600` (the full three-condition plan) while
-  executing 20 (conditions b and c). Honest, but the two numbers describe
-  different scopes.
+- `demo-mock`'s `planned=600` gap is closed: `plan()` now takes `conditions` and
+  `run()` passes them, so its manifest reads `planned: 20` == `executed: 20`, both
+  for conditions b and c at `n_trials=1`. `demo-mock` pins `n_trials` to 1 for
+  exactly this reason -- the replicate loop is real, so the configured `N_TRIALS`
+  of 20 would make a smoke test 400 trials.
 - The unsafe fixtures for t10 are covered by the shared unsafe-fixture test; the
   per-fixture failure counts are not separately pinned.
 

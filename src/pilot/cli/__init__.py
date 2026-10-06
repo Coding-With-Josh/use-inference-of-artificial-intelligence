@@ -5,8 +5,12 @@ from pathlib import Path
 
 import typer
 
-from pilot.models.http import ProviderError
-from pilot.models.registry import resolve, warn_if_unusual_base_url
+from pilot.models.http import BaseUrlBlocked, ProviderError
+from pilot.models.registry import (
+    check_configured_base_url,
+    describe_unusual_base_url,
+    resolve,
+)
 from pilot.runner import run as runner
 from pilot.tasks import validate as tasks_validate
 
@@ -16,15 +20,27 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @app.command("study1-plan")
-def study1_plan() -> None:
+def study1_plan(
+    allow_custom_base_url: bool = typer.Option(
+        False,
+        "--allow-custom-base-url",
+        help=(
+            "Permit a *_BASE_URL that is not the provider's official host, so the "
+            "API key may be sent there. Recorded in every trial's provenance."
+        ),
+    ),
+) -> None:
     """Print the trial plan and cost estimate. Spends nothing.
 
     Also resolves the configured provider, so an unsupported or misspelled
     PROVIDER is reported here -- before any run -- instead of at the first paid
     API call. Without this, a typo looked like a valid plan.
     """
+    cfg = runner.load_config()
+    if allow_custom_base_url:
+        cfg.model.allow_custom_base_url = True
     try:
-        result = runner.plan()
+        result = runner.plan(cfg)
         # Resolution is pure: it imports the adapter and reads config, it does
         # not construct a client or open a connection.
         resolve(result["provider"])
@@ -32,12 +48,17 @@ def study1_plan() -> None:
         typer.echo(f"configuration error: {exc}", err=True)
         raise typer.Exit(code=4) from exc
 
-    # A *_BASE_URL override redirects the API key to another host. That is a
-    # legitimate proxy setting, so it is surfaced rather than blocked -- but it
-    # must never be invisible.
-    warning_text = warn_if_unusual_base_url()
-    if warning_text:
-        typer.echo(f"warning: {warning_text}", err=True)
+    # A non-official base URL redirects the API key to another host. Refused here
+    # (exit 4, before anything runs) unless the operator opted in with
+    # --allow-custom-base-url; when they did, it is stated in plain sight.
+    try:
+        check_configured_base_url(cfg)
+    except BaseUrlBlocked as exc:
+        typer.echo(f"configuration error: {exc}", err=True)
+        raise typer.Exit(code=4) from exc
+    note = describe_unusual_base_url(cfg)
+    if note:
+        typer.echo(f"note: {note}", err=True)
 
     typer.echo(
         f"trials={result['trials']} tasks={result['tasks']} "
@@ -56,12 +77,43 @@ def study1_run(
         "--ablate",
         help="Comma-separated condition-C ablations: context,decomposition,guardrails.",
     ),
+    allow_custom_base_url: bool = typer.Option(
+        False,
+        "--allow-custom-base-url",
+        help=(
+            "Permit a *_BASE_URL that is not the provider's official host, so the "
+            "API key may be sent there. Recorded in every trial's provenance."
+        ),
+    ),
+    tasks: str = typer.Option(
+        "",
+        "--tasks",
+        help="Comma-separated task ids to run, e.g. --tasks t01,t07. Empty = all.",
+    ),
+    trials: int = typer.Option(
+        0,
+        "--trials",
+        help="Replicates per (task, condition). 0 = the configured N_TRIALS.",
+    ),
+    conditions: str = typer.Option(
+        "",
+        "--conditions",
+        help="Comma-separated conditions to run, e.g. --conditions b,c. Empty = all three.",
+    ),
 ) -> None:
-    """Execute the study-1 trial matrix."""
+    """Execute the study-1 trial matrix.
+
+    `--tasks t01,t07 --trials 3 --conditions b,c --dry-run` is the pilot-mode
+    preview: it prints exactly which trials would run, in what order, for which
+    provider, and what it would cost, without calling a model or grading
+    anything.
+    """
     # Parsed and validated before any spend: an unknown ablation name must not
     # be discovered only after the trials it was meant to disable have run.
     try:
         ablations = runner.parse_ablation(ablate)
+        task_filter = runner.parse_task_filter(tasks)
+        condition_filter = runner.parse_conditions(conditions)
     except ValueError as exc:
         typer.echo(f"configuration error: {exc}", err=True)
         raise typer.Exit(code=4) from exc
@@ -70,13 +122,34 @@ def study1_run(
     # patches the runner's config source still controls this command.
     cfg = runner.load_config()
     cfg.experiment.ablation = ",".join(ablations) or None
+    if trials:
+        if trials < 1:
+            typer.echo("configuration error: --trials must be >= 1", err=True)
+            raise typer.Exit(code=4)
+        cfg.experiment.n_trials = trials
 
-    warning_text = warn_if_unusual_base_url(cfg)
-    if warning_text:
-        typer.echo(f"warning: {warning_text}", err=True)
+    # The flag is the explicit opt-in for redirecting the credential. It is
+    # checked before anything runs, so a stale *_BASE_URL costs nothing.
+    if allow_custom_base_url:
+        cfg.model.allow_custom_base_url = True
+    try:
+        check_configured_base_url(cfg)
+    except BaseUrlBlocked as exc:
+        typer.echo(f"configuration error: {exc}", err=True)
+        raise typer.Exit(code=4) from exc
+    note = describe_unusual_base_url(cfg)
+    if note:
+        typer.echo(f"note: {note}", err=True)
 
     try:
-        summary = runner.run(cfg, run_id=run_id, dry_run=dry_run, resume=not no_resume)
+        summary = runner.run(
+            cfg,
+            run_id=run_id,
+            conditions=condition_filter or runner.CONDITIONS,
+            task_filter=task_filter,
+            dry_run=dry_run,
+            resume=not no_resume,
+        )
     except runner.BudgetExceeded as exc:
         typer.echo(f"budget guard: {exc}", err=True)
         raise typer.Exit(code=3) from exc
@@ -85,10 +158,27 @@ def study1_run(
         # The message is already redacted by `pilot.models.http`.
         typer.echo(f"provider error: {exc}", err=True)
         raise typer.Exit(code=4) from exc
+
+    if dry_run:
+        typer.echo(
+            f"DRY RUN: run_id={summary['run_id']} would execute "
+            f"{summary['planned_trials']} trial(s) "
+            f"for provider {summary['provider']}"
+        )
+        for line in summary["planned_order"]:
+            typer.echo(f"  would run {line}")
+        typer.echo(
+            f"DRY RUN: estimated_cost_usd={summary['cost_estimate_usd']} "
+            f"within_budget={summary['within_budget']} "
+            f"(no model called, nothing graded, nothing written)"
+        )
+        return
+
     typer.echo(
         f"run_id={summary['run_id']} executed={summary['executed']} "
-        f"skipped={summary['skipped']} spent_usd={summary['spent_usd']} "
-        f"dry_run={summary['dry_run']}"
+        f"skipped={summary['skipped']} ungraded={summary['ungraded']} "
+        f"retried_first={summary['retried_first']} "
+        f"spent_usd={summary['spent_usd']} dry_run={summary['dry_run']}"
     )
 
 
@@ -145,6 +235,11 @@ def demo_mock(
     cfg = runner.load_config()
     cfg.model.provider = "mock"
     cfg.model.id = "mock"
+    # One replicate per (task, condition). The replicate loop is real now, so at
+    # the configured N_TRIALS this would be 10 x 2 x 20 = 400 trials and ~50
+    # minutes. A pipeline smoke test needs to prove the pipeline works, not to
+    # collect a sample, so it takes 20 trials and stays in CI budget.
+    cfg.experiment.n_trials = 1
     summary = runner.run(cfg, run_id=run_id, conditions=("b", "c"), dry_run=dry_run)
     analysis = runner.analyze(run_id=run_id, output_dir=out_dir)
 
